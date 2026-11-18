@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: los-malditos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: los_malditos
+      POSTGRES_USER: los_malditos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-los_malditos_dev_pwd}
+      TZ: America/Bogota
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U los_malditos -d los_malditos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: los-malditos-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      TZ: America/Bogota
+      DATABASE_URL: postgresql://los_malditos:${POSTGRES_PASSWORD:-los_malditos_dev_pwd}@postgres:5432/los_malditos
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-cambia-este-secreto-access-en-produccion-min-32-chars}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-cambia-este-secreto-refresh-en-produccion-min-32-chars}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      FIREBASE_SERVICE_ACCOUNT_JSON: ${FIREBASE_SERVICE_ACCOUNT_JSON:-}
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:

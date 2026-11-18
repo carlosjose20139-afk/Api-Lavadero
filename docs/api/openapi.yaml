@@ -1,0 +1,1220 @@
+openapi: 3.0.3
+info:
+  title: Los Malditos API
+  version: 1.0.0
+  description: |
+    API REST para el lavadero de motos Los Malditos.
+    La moneda es COP y la zona horaria de negocio es America/Bogota.
+    No incluye pasarela de pagos: los pagos son registrados manualmente por el administrador.
+servers:
+  - url: https://api.losmalditos.co/api/v1
+    description: Producción
+  - url: http://localhost:8080/api/v1
+    description: Desarrollo
+tags:
+  - name: Auth
+  - name: Clientes
+  - name: Motos
+  - name: Servicios
+  - name: Citas
+  - name: Lavadas
+  - name: Notificaciones
+  - name: Fidelización
+  - name: Finanzas
+  - name: Inventario
+  - name: Empleados
+  - name: Promociones
+  - name: Reseñas
+  - name: Foro
+  - name: Reportes
+security:
+  - bearerAuth: []
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Iniciar sesión con usuario y contraseña
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Sesión iniciada
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AuthSession' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Renovar access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revocar sesión actual
+      responses:
+        '200': { $ref: '#/components/responses/Empty' }
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Cambiar contraseña propia
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, format: password }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        '200': { $ref: '#/components/responses/Empty' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /customers:
+    get:
+      tags: [Clientes]
+      summary: Listar clientes
+      description: Solo Administrador. Incluye búsqueda, estado y segmentación.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: status, schema: { type: string, enum: [active, blocked] } }
+      responses:
+        '200': { $ref: '#/components/responses/CustomerPage' }
+    post:
+      tags: [Clientes]
+      summary: Crear cliente desde mostrador
+      description: Únicamente Administrador. No existe registro público de clientes y no recibe teléfono, correo, placa ni cédula.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/SuccessUser' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /customers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Clientes]
+      summary: Ver cliente e historial
+      responses:
+        '200': { $ref: '#/components/responses/Customer' }
+    patch:
+      tags: [Clientes]
+      summary: Editar nombre, notas o estado del cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                notes: { type: string, nullable: true }
+                isBlocked: { type: boolean }
+      responses:
+        '200': { $ref: '#/components/responses/Customer' }
+  /customers/{id}/reset-password:
+    post:
+      tags: [Clientes]
+      summary: Restablecer contraseña de cliente
+      description: Solo Administrador. Devuelve una temporal; obliga a cambiarla al iniciar.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Contraseña temporal generada
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          temporaryPassword: { type: string }
+                          mustChangePassword: { type: boolean }
+  /motorcycles:
+    get:
+      tags: [Motos]
+      summary: Listar motos visibles para el usuario
+      parameters:
+        - { in: query, name: customerId, schema: { type: string, format: uuid } }
+      responses:
+        '200': { $ref: '#/components/responses/MotorcyclePage' }
+    post:
+      tags: [Motos]
+      summary: Registrar moto
+      description: Cliente registra la propia; Administrador registra y asocia a cualquier cliente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotorcycleInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Motorcycle' }
+  /motorcycles/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      tags: [Motos]
+      summary: Editar moto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MotorcycleInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Motorcycle' }
+    delete:
+      tags: [Motos]
+      summary: Eliminar moto
+      description: Rechaza la operación si la moto tiene citas o historial; usar confirmación en el cliente.
+      responses:
+        '204': { description: Eliminada }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /services:
+    get:
+      tags: [Servicios]
+      security: []
+      summary: Catálogo de servicios activos
+      responses:
+        '200': { $ref: '#/components/responses/ServicePage' }
+    post:
+      tags: [Servicios]
+      summary: Crear servicio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Service' }
+  /services/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      tags: [Servicios]
+      summary: Editar o activar/desactivar servicio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Service' }
+    delete:
+      tags: [Servicios]
+      summary: Eliminar servicio
+      responses:
+        '204': { description: Eliminado }
+  /appointments/availability:
+    get:
+      tags: [Citas]
+      security: []
+      summary: Consultar horarios disponibles
+      parameters:
+        - { in: query, name: date, required: true, schema: { type: string, format: date } }
+        - { in: query, name: serviceId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: motorcycleId, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Horarios y capacidad disponible
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          date: { type: string, format: date }
+                          slots:
+                            type: array
+                            items: { $ref: '#/components/schemas/AvailabilitySlot' }
+  /appointments:
+    get:
+      tags: [Citas]
+      summary: Listar citas
+      parameters:
+        - { in: query, name: from, schema: { type: string, format: date-time } }
+        - { in: query, name: to, schema: { type: string, format: date-time } }
+        - { in: query, name: status, schema: { type: string } }
+        - { in: query, name: customerId, schema: { type: string, format: uuid } }
+      responses:
+        '200': { $ref: '#/components/responses/AppointmentPage' }
+    post:
+      tags: [Citas]
+      summary: Crear cita
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppointmentInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Appointment' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /appointments/{id}/cancel:
+    post:
+      tags: [Citas]
+      summary: Cancelar cita con motivo
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { reason: { type: string, nullable: true } }
+      responses:
+        '200': { $ref: '#/components/responses/Appointment' }
+  /appointments/{id}/reschedule:
+    post:
+      tags: [Citas]
+      summary: Reprogramar cita
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startAt]
+              properties:
+                startAt: { type: string, format: date-time }
+      responses:
+        '200': { $ref: '#/components/responses/Appointment' }
+  /wash-requests:
+    get:
+      tags: [Lavadas]
+      summary: Listar lavadas y cola del día
+      parameters:
+        - { in: query, name: status, schema: { type: string, enum: [pending_confirmation, confirmed, rejected, expired, washing, drying, ready, paid, cancelled] } }
+        - { in: query, name: date, schema: { type: string, format: date } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { $ref: '#/components/responses/WashRequestPage' }
+    post:
+      tags: [Lavadas]
+      summary: Crear y enviar lavada para confirmación
+      description: Solo Administrador o Lavador autorizado. Debe ser idempotente con X-Idempotency-Key.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WashRequestInput' }
+      responses:
+        '201': { $ref: '#/components/responses/WashRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /wash-requests/{id}/confirm:
+    post:
+      tags: [Lavadas]
+      summary: Confirmar lavada
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { $ref: '#/components/responses/WashRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /wash-requests/{id}/reject:
+    post:
+      tags: [Lavadas]
+      summary: Rechazar lavada
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { reason: { type: string, nullable: true, maxLength: 500 } }
+      responses:
+        '200': { $ref: '#/components/responses/WashRequest' }
+  /wash-requests/{id}/resend:
+    post:
+      tags: [Lavadas]
+      summary: Reenviar lavada vencida o rechazada
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/WashRequest' }
+  /wash-requests/{id}/status:
+    patch:
+      tags: [Lavadas]
+      summary: Cambiar estado operativo
+      description: Lavador o Administrador. Transiciones válidas washing, drying, ready, paid.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [washing, drying, ready, paid, cancelled] }
+                employeeId: { type: string, format: uuid, nullable: true }
+                beforePhotoUrl: { type: string, format: uri, nullable: true }
+                afterPhotoUrl: { type: string, format: uri, nullable: true }
+      responses:
+        '200': { $ref: '#/components/responses/WashRequest' }
+  /notifications:
+    get:
+      tags: [Notificaciones]
+      summary: Notificaciones del usuario autenticado
+      parameters:
+        - { in: query, name: unread, schema: { type: boolean } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200': { $ref: '#/components/responses/NotificationPage' }
+  /notifications/{id}/read:
+    patch:
+      tags: [Notificaciones]
+      summary: Marcar notificación como leída
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/Notification' }
+  /notifications/read-all:
+    post:
+      tags: [Notificaciones]
+      summary: Marcar todas como leídas
+      responses:
+        '200': { $ref: '#/components/responses/Empty' }
+  /devices:
+    post:
+      tags: [Notificaciones]
+      summary: Registrar token FCM
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, platform]
+              properties:
+                token: { type: string }
+                platform: { type: string, enum: [android, ios, web] }
+      responses:
+        '201': { $ref: '#/components/responses/Empty' }
+  /loyalty/me:
+    get:
+      tags: [Fidelización]
+      summary: Tarjeta 7+1 del cliente actual
+      responses:
+        '200': { $ref: '#/components/responses/Loyalty' }
+  /loyalty/stamps:
+    post:
+      tags: [Fidelización]
+      summary: Registrar sello por lavada pagada
+      description: Solo una vez por lavada; el backend debe validar pago y evitar duplicados.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [washRequestId]
+              properties: { washRequestId: { type: string, format: uuid } }
+      responses:
+        '201': { $ref: '#/components/responses/Loyalty' }
+  /loyalty/rewards:
+    get:
+      tags: [Fidelización]
+      summary: Premios disponibles y asignados
+      parameters: [{ in: query, name: customerId, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { $ref: '#/components/responses/LoyaltyPage' }
+  /loyalty/rewards/{id}/redeem:
+    post:
+      tags: [Fidelización]
+      summary: Redimir premio dentro del periodo asignado
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                appointmentId: { type: string, format: uuid, nullable: true }
+      responses:
+        '200': { $ref: '#/components/responses/Loyalty' }
+  /payments:
+    post:
+      tags: [Finanzas]
+      summary: Registrar pago manual
+      description: Solo Administrador o Lavador. No procesa tarjetas ni pasarelas.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PaymentInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Payment' }
+  /expenses:
+    get:
+      tags: [Finanzas]
+      summary: Listar gastos
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }]
+      responses:
+        '200': { $ref: '#/components/responses/ExpensePage' }
+    post:
+      tags: [Finanzas]
+      summary: Registrar gasto
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExpenseInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Expense' }
+  /incomes:
+    get:
+      tags: [Finanzas]
+      summary: Listar ingresos, incluidos cargos de cancelación
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }]
+      responses:
+        '200': { $ref: '#/components/responses/IncomePage' }
+  /inventory/items:
+    get:
+      tags: [Inventario]
+      summary: Listar inventario y alertas de stock
+      responses:
+        '200': { $ref: '#/components/responses/InventoryPage' }
+    post:
+      tags: [Inventario]
+      summary: Crear insumo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InventoryInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Inventory' }
+  /inventory/items/{id}/movements:
+    post:
+      tags: [Inventario]
+      summary: Entrada o salida de inventario
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, quantity]
+              properties:
+                type: { type: string, enum: [in, out, adjustment] }
+                quantity: { type: number, minimum: 0 }
+                reason: { type: string }
+      responses:
+        '201': { $ref: '#/components/responses/Inventory' }
+  /employees:
+    get:
+      tags: [Empleados]
+      summary: Listar empleados
+      responses:
+        '200': { $ref: '#/components/responses/EmployeePage' }
+    post:
+      tags: [Empleados]
+      summary: Crear empleado lavador
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmployeeInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Employee' }
+  /promotions:
+    get:
+      tags: [Promociones]
+      security: []
+      summary: Listar promociones vigentes
+      responses:
+        '200': { $ref: '#/components/responses/PromotionPage' }
+    post:
+      tags: [Promociones]
+      summary: Crear promoción
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Promotion' }
+  /reviews:
+    get:
+      tags: [Reseñas]
+      security: []
+      summary: Listar reseñas públicas
+      responses:
+        '200': { $ref: '#/components/responses/ReviewPage' }
+    post:
+      tags: [Reseñas]
+      summary: Crear reseña de servicio completado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [washRequestId, rating, comment]
+              properties:
+                washRequestId: { type: string, format: uuid }
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, maxLength: 1000 }
+      responses:
+        '201': { $ref: '#/components/responses/Review' }
+  /reviews/{id}/moderate:
+    patch:
+      tags: [Reseñas]
+      summary: Ocultar o responder reseña
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isVisible: { type: boolean }
+                adminReply: { type: string, nullable: true }
+      responses:
+        '200': { $ref: '#/components/responses/Review' }
+  /forum/posts:
+    get:
+      tags: [Foro]
+      security: []
+      summary: Listar publicaciones del foro
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }]
+      responses:
+        '200': { $ref: '#/components/responses/ForumPage' }
+    post:
+      tags: [Foro]
+      summary: Crear publicación
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForumInput' }
+      responses:
+        '201': { $ref: '#/components/responses/ForumPost' }
+  /forum/posts/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      tags: [Foro]
+      summary: Editar publicación
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [content], properties: { content: { type: string } } }
+      responses:
+        '200': { $ref: '#/components/responses/ForumPost' }
+    delete:
+      tags: [Foro]
+      summary: Eliminar publicación propia o moderar como administrador
+      responses:
+        '204': { description: Eliminada }
+  /forum/posts/{id}/replies:
+    post:
+      tags: [Foro]
+      summary: Responder publicación
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [content], properties: { content: { type: string } } }
+      responses:
+        '201': { $ref: '#/components/responses/ForumPost' }
+  /forum/audit:
+    get:
+      tags: [Foro]
+      summary: Historial de edición, eliminación y moderación
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { in: query, name: actorId, schema: { type: string, format: uuid } }
+        - { in: query, name: action, schema: { type: string, enum: [created, edited, deleted, moderated] } }
+      responses:
+        '200': { $ref: '#/components/responses/AuditPage' }
+  /reports/dashboard:
+    get:
+      tags: [Reportes]
+      summary: KPIs del dashboard administrativo
+      parameters:
+        - { in: query, name: from, required: true, schema: { type: string, format: date } }
+        - { in: query, name: to, required: true, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: KPIs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DashboardReport' }
+  /reports/export:
+    get:
+      tags: [Reportes]
+      summary: Exportar reporte
+      parameters:
+        - { in: query, name: format, required: true, schema: { type: string, enum: [csv, xlsx, pdf] } }
+        - { in: query, name: from, required: true, schema: { type: string, format: date } }
+        - { in: query, name: to, required: true, schema: { type: string, format: date } }
+      responses:
+        '200':
+          description: Archivo
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Id:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      in: query
+      name: page
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      in: query
+      name: pageSize
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IdempotencyKey:
+      in: header
+      name: X-Idempotency-Key
+      required: true
+      schema: { type: string, minLength: 16, maxLength: 100 }
+  responses:
+    Empty:
+      description: Operación exitosa
+      content:
+        application/json: { schema: { $ref: '#/components/schemas/Envelope' } }
+    SuccessUser:
+      description: Usuario creado
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties: { data: { $ref: '#/components/schemas/User' } }
+    Session:
+      description: Sesión
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties: { data: { $ref: '#/components/schemas/AuthSession' } }
+    Customer:
+      description: Cliente
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Customer' } } }] } }
+    Motorcycle:
+      description: Moto
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Motorcycle' } } }] } }
+    Service:
+      description: Servicio
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Service' } } }] } }
+    Appointment:
+      description: Cita
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Appointment' } } }] } }
+    WashRequest:
+      description: Lavada
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/WashRequest' } } }] } }
+    Notification:
+      description: Notificación
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Notification' } } }] } }
+    Loyalty:
+      description: Fidelización
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/LoyaltyCard' } } }] } }
+    Payment:
+      description: Pago manual
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Payment' } } }] } }
+    Expense:
+      description: Gasto
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Expense' } } }] } }
+    Income:
+      description: Ingreso
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Income' } } }] } }
+    Inventory:
+      description: Insumo
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/InventoryItem' } } }] } }
+    Employee:
+      description: Empleado
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Employee' } } }] } }
+    Promotion:
+      description: Promoción
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Promotion' } } }] } }
+    Review:
+      description: Reseña
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Review' } } }] } }
+    ForumPost:
+      description: Publicación
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/ForumPost' } } }] } }
+    CustomerPage:
+      description: Página de clientes
+      content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } }
+    MotorcyclePage:
+      description: Página de motos
+      content: { application/json: { schema: { $ref: '#/components/schemas/MotorcyclePage' } } }
+    ServicePage:
+      description: Página de servicios
+      content: { application/json: { schema: { $ref: '#/components/schemas/ServicePage' } } }
+    AppointmentPage:
+      description: Página de citas
+      content: { application/json: { schema: { $ref: '#/components/schemas/AppointmentPage' } } }
+    WashRequestPage:
+      description: Página de lavadas
+      content: { application/json: { schema: { $ref: '#/components/schemas/WashRequestPage' } } }
+    NotificationPage:
+      description: Página de notificaciones
+      content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPage' } } }
+    LoyaltyPage:
+      description: Página de premios
+      content: { application/json: { schema: { $ref: '#/components/schemas/LoyaltyPage' } } }
+    ExpensePage:
+      description: Página de gastos
+      content: { application/json: { schema: { $ref: '#/components/schemas/ExpensePage' } } }
+    IncomePage:
+      description: Página de ingresos
+      content: { application/json: { schema: { $ref: '#/components/schemas/IncomePage' } } }
+    InventoryPage:
+      description: Página de inventario
+      content: { application/json: { schema: { $ref: '#/components/schemas/InventoryPage' } } }
+    EmployeePage:
+      description: Página de empleados
+      content: { application/json: { schema: { $ref: '#/components/schemas/EmployeePage' } } }
+    PromotionPage:
+      description: Página de promociones
+      content: { application/json: { schema: { $ref: '#/components/schemas/PromotionPage' } } }
+    ReviewPage:
+      description: Página de reseñas
+      content: { application/json: { schema: { $ref: '#/components/schemas/ReviewPage' } } }
+    ForumPage:
+      description: Página del foro
+      content: { application/json: { schema: { $ref: '#/components/schemas/ForumPage' } } }
+    AuditPage:
+      description: Página de auditoría
+      content: { application/json: { schema: { $ref: '#/components/schemas/AuditPage' } } }
+    Unauthorized:
+      description: No autorizado
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    Conflict:
+      description: Conflicto de negocio
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    ValidationError:
+      description: Datos inválidos
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+  schemas:
+    Envelope:
+      type: object
+      required: [data, message]
+      properties:
+        data: {}
+        message: { type: string, example: Operación exitosa }
+    ErrorEnvelope:
+      type: object
+      required: [data, message]
+      properties:
+        data:
+          type: object
+          properties:
+            code: { type: string }
+            fields: { type: object, additionalProperties: { type: string } }
+        message: { type: string, example: No se pudo completar la operación }
+    PageMeta:
+      type: object
+      required: [page, pageSize, total, totalPages]
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+    RegisterRequest:
+      type: object
+      required: [name, username, password]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120 }
+        username: { type: string, minLength: 3, maxLength: 40, pattern: '^[a-zA-Z0-9_.-]+$' }
+        password: { type: string, format: password, minLength: 8 }
+        termsAcceptedAt: { type: string, format: date-time }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    User:
+      type: object
+      required: [id, name, username, role, isActive]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        username: { type: string }
+        role: { type: string, enum: [Cliente, Lavador, Administrador] }
+        isActive: { type: boolean }
+        mustChangePassword: { type: boolean }
+        termsAcceptedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    AuthSession:
+      type: object
+      required: [user, accessToken, refreshToken, expiresIn]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer }
+    Customer:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            notes: { type: string, nullable: true }
+            motorcycles: { type: array, items: { $ref: '#/components/schemas/Motorcycle' } }
+            pendingBalance: { type: integer, minimum: 0 }
+            completedWashes: { type: integer, minimum: 0 }
+    MotorcycleInput:
+      type: object
+      required: [brand, model, cc]
+      properties:
+        customerId: { type: string, format: uuid }
+        brand: { type: string }
+        model: { type: string }
+        cc: { type: integer, minimum: 1 }
+        nickname: { type: string, nullable: true }
+        color: { type: string, nullable: true }
+    Motorcycle:
+      allOf:
+        - $ref: '#/components/schemas/MotorcycleInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+    ServiceInput:
+      type: object
+      required: [name, price, durationMinutes]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        price: { type: integer, minimum: 0 }
+        durationMinutes: { type: integer, minimum: 1 }
+        surchargeFromCc: { type: integer, nullable: true }
+        isActive: { type: boolean, default: true }
+    Service:
+      allOf:
+        - $ref: '#/components/schemas/ServiceInput'
+        - type: object
+          required: [id]
+          properties: { id: { type: string, format: uuid } }
+    AppointmentInput:
+      type: object
+      required: [customerId, motorcycleId, serviceId, startAt]
+      properties:
+        customerId: { type: string, format: uuid }
+        motorcycleId: { type: string, format: uuid }
+        serviceId: { type: string, format: uuid }
+        startAt: { type: string, format: date-time }
+        notes: { type: string, nullable: true }
+        isLoyaltyRedemption: { type: boolean, default: false }
+    Appointment:
+      allOf:
+        - $ref: '#/components/schemas/AppointmentInput'
+        - type: object
+          required: [id, status, customerName, motorcycleName, serviceName]
+          properties:
+            id: { type: string, format: uuid }
+            customerName: { type: string }
+            motorcycleName: { type: string }
+            serviceName: { type: string }
+            endAt: { type: string, format: date-time }
+            status: { type: string, enum: [scheduled, confirmed, completed, cancelled, waitlisted] }
+            cancellationReason: { type: string, nullable: true }
+            cancellationFee: { type: integer, minimum: 0 }
+    AvailabilitySlot:
+      type: object
+      properties:
+        startAt: { type: string, format: date-time }
+        endAt: { type: string, format: date-time }
+        availableCapacity: { type: integer }
+    WashRequestInput:
+      type: object
+      required: [customerId, motorcycleId, serviceId, price]
+      properties:
+        customerId: { type: string, format: uuid }
+        motorcycleId: { type: string, format: uuid }
+        serviceId: { type: string, format: uuid }
+        appointmentId: { type: string, format: uuid, nullable: true }
+        price: { type: integer, minimum: 0 }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+        expiresInMinutes: { type: integer, minimum: 1, default: 15 }
+    WashRequest:
+      allOf:
+        - $ref: '#/components/schemas/WashRequestInput'
+        - type: object
+          required: [id, status, customerName, motorcycleName, serviceName, audit]
+          properties:
+            id: { type: string, format: uuid }
+            customerName: { type: string }
+            motorcycleName: { type: string }
+            serviceName: { type: string }
+            status: { type: string, enum: [pending_confirmation, confirmed, rejected, expired, washing, drying, ready, paid, cancelled] }
+            rejectionReason: { type: string, nullable: true }
+            confirmedAt: { type: string, format: date-time, nullable: true }
+            completedAt: { type: string, format: date-time, nullable: true }
+            audit:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditEvent'
+    PaymentInput:
+      type: object
+      required: [washRequestId, method, amount]
+      properties:
+        washRequestId: { type: string, format: uuid }
+        method: { type: string, enum: [Efectivo, Nequi, Daviplata] }
+        amount: { type: integer, minimum: 0 }
+        reference: { type: string, nullable: true }
+    Payment:
+      allOf:
+        - $ref: '#/components/schemas/PaymentInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            paidAt: { type: string, format: date-time }
+            employeeCommission: { type: integer, minimum: 0 }
+    PromotionInput:
+      type: object
+      required: [title, description, startsAt, endsAt]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        discountAmount: { type: integer, minimum: 0, nullable: true }
+        discountPercent: { type: number, minimum: 0, maximum: 100, nullable: true }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        isActive: { type: boolean, default: true }
+    Promotion:
+      allOf:
+        - $ref: '#/components/schemas/PromotionInput'
+        - type: object
+          properties: { id: { type: string, format: uuid } }
+    Review:
+      type: object
+      required: [id, customerName, rating, comment, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        washRequestId: { type: string, format: uuid }
+        customerName: { type: string }
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        comment: { type: string }
+        adminReply: { type: string, nullable: true }
+        isVisible: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    Notification:
+      type: object
+      required: [id, userId, title, body, type, isRead, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        type: { type: string }
+        deepLink: { type: string, nullable: true }
+        payload: { type: object, additionalProperties: true }
+        isRead: { type: boolean }
+        createdAt: { type: string, format: date-time }
+    ExpenseInput:
+      type: object
+      required: [category, description, amount, occurredAt]
+      properties:
+        category: { type: string, enum: [Agua, Jabon, Luz, Nomina, Guantes, Paños, Otro] }
+        description: { type: string }
+        amount: { type: integer, minimum: 0 }
+        occurredAt: { type: string, format: date-time }
+        isRecurring: { type: boolean, default: false }
+    Expense:
+      allOf:
+        - $ref: '#/components/schemas/ExpenseInput'
+        - type: object
+          properties: { id: { type: string, format: uuid } }
+    Income:
+      type: object
+      required: [id, source, amount, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        source: { type: string, enum: [wash, cancellation_fee, other] }
+        washRequestId: { type: string, format: uuid, nullable: true }
+        customerId: { type: string, format: uuid, nullable: true }
+        amount: { type: integer, minimum: 0 }
+        occurredAt: { type: string, format: date-time }
+    InventoryInput:
+      type: object
+      required: [name, unit, currentStock, minimumStock]
+      properties:
+        name: { type: string }
+        unit: { type: string, enum: [unidad, litro, kilogramo, paquete] }
+        currentStock: { type: number, minimum: 0 }
+        minimumStock: { type: number, minimum: 0 }
+        estimatedUsePerWash: { type: number, minimum: 0 }
+    InventoryItem:
+      allOf:
+        - $ref: '#/components/schemas/InventoryInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            isLowStock: { type: boolean }
+    EmployeeInput:
+      type: object
+      required: [name, role, commissionPercent]
+      properties:
+        name: { type: string }
+        role: { type: string, enum: [Lavador] }
+        commissionPercent: { type: number, minimum: 0, maximum: 100 }
+        isActive: { type: boolean, default: true }
+    Employee:
+      allOf:
+        - $ref: '#/components/schemas/EmployeeInput'
+        - type: object
+          properties: { id: { type: string, format: uuid } }
+    LoyaltyCard:
+      type: object
+      properties:
+        customerId: { type: string, format: uuid }
+        stamps: { type: integer, minimum: 0, maximum: 7 }
+        completedWashes: { type: integer, minimum: 0 }
+        qrToken: { type: string }
+        rewards:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, format: uuid }
+              title: { type: string }
+              validFrom: { type: string, format: date-time }
+              validUntil: { type: string, format: date-time }
+              status: { type: string, enum: [available, redeemed, expired] }
+    ForumInput:
+      type: object
+      required: [content]
+      properties:
+        title: { type: string, maxLength: 160 }
+        content: { type: string, maxLength: 5000 }
+    ForumPost:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        authorId: { type: string, format: uuid }
+        authorName: { type: string }
+        title: { type: string }
+        content: { type: string }
+        editedAt: { type: string, format: date-time, nullable: true }
+        deletedAt: { type: string, format: date-time, nullable: true }
+        replies: { type: array, items: { type: object, additionalProperties: true } }
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actorId: { type: string, format: uuid }
+        actorName: { type: string }
+        action: { type: string }
+        occurredAt: { type: string, format: date-time }
+        previousContent: { type: string, nullable: true }
+        newContent: { type: string, nullable: true }
+    DashboardReport:
+      type: object
+      properties:
+        washesToday: { type: integer }
+        incomeToday: { type: integer }
+        averageTicket: { type: integer }
+        occupancyByHour: { type: object, additionalProperties: { type: number } }
+        topServices: { type: array, items: { type: object, additionalProperties: true } }
+        newCustomers: { type: integer }
+        recurrentCustomers: { type: integer }
+    CustomerPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Customer' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    MotorcyclePage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Motorcycle' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    ServicePage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Service' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    AppointmentPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Appointment' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    WashRequestPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/WashRequest' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    NotificationPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Notification' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    LoyaltyPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/LoyaltyCard' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    ExpensePage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Expense' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    IncomePage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Income' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    InventoryPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/InventoryItem' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    EmployeePage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Employee' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    PromotionPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Promotion' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    ReviewPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Review' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    ForumPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/ForumPost' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    AuditPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]

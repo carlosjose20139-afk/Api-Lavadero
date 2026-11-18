@@ -1,0 +1,6 @@
+{
+  "name": "Los Malditos API",
+  "description": "Backend REST API para el lavadero de motos Los Malditos en Colombia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
