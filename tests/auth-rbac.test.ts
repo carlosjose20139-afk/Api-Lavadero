@@ -39,10 +39,21 @@ describe('Auth, RBAC, Seguridad y Ley 1581', () => {
     expect(withForbiddenField.body.data.code).toBe('VALIDATION_ERROR');
   });
 
-  it('rechaza campo placa al registrar moto', async () => {
-    const res = await request(ctx.app)
+  it('rechaza campo placa al registrar moto y bloquea creación por Cliente (403)', async () => {
+    const asCliente = await request(ctx.app)
       .post('/api/v1/motorcycles')
       .set('Authorization', `Bearer ${ctx.clienteToken}`)
+      .send({
+        brand: 'Suzuki',
+        model: 'Gixxer 250',
+        cc: 249,
+      });
+    expect(asCliente.status).toBe(403);
+    expect(asCliente.body.data.code).toBe('FORBIDDEN');
+
+    const res = await request(ctx.app)
+      .post('/api/v1/motorcycles')
+      .set('Authorization', `Bearer ${ctx.adminToken}`)
       .send({
         brand: 'Suzuki',
         model: 'Gixxer 250',

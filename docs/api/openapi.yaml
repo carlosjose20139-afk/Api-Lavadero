@@ -7,7 +7,7 @@ info:
     La moneda es COP y la zona horaria de negocio es America/Bogota.
     No incluye pasarela de pagos: los pagos son registrados manualmente por el administrador.
 servers:
-  - url: https://api.losmalditos.co/api/v1
+  - url: https://apilosmalditos.jminternet.online/api/v1
     description: Producción
   - url: http://localhost:8080/api/v1
     description: Desarrollo
@@ -161,18 +161,37 @@ paths:
                         properties:
                           temporaryPassword: { type: string }
                           mustChangePassword: { type: boolean }
+  /customers/{customerId}/motorcycles:
+    get:
+      tags: [Clientes, Motos]
+      summary: Listar motos actualmente asociadas a un cliente
+      description: Administrador puede consultar cualquier cliente; Cliente únicamente su propio customerId.
+      parameters:
+        - { in: path, name: customerId, required: true, schema: { type: string, format: uuid } }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200': { $ref: '#/components/responses/MotorcyclePage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /motorcycles:
     get:
       tags: [Motos]
       summary: Listar motos visibles para el usuario
+      description: Administrador ve todas las motos (asignadas y sin asignar) con filtros. Cliente solo ve sus motos actualmente asociadas.
       parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
         - { in: query, name: customerId, schema: { type: string, format: uuid } }
+        - { in: query, name: status, schema: { type: string, enum: [assigned, unassigned] } }
+        - { in: query, name: search, schema: { type: string } }
       responses:
         '200': { $ref: '#/components/responses/MotorcyclePage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [Motos]
-      summary: Registrar moto
-      description: Cliente registra la propia; Administrador registra y asocia a cualquier cliente.
+      summary: Registrar moto (solo Administrador)
+      description: Únicamente Administrador puede registrar motos, con o sin customerId inicial.
       requestBody:
         required: true
         content:
@@ -180,25 +199,76 @@ paths:
             schema: { $ref: '#/components/schemas/MotorcycleInput' }
       responses:
         '201': { $ref: '#/components/responses/Motorcycle' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /motorcycles/{id}:
     parameters: [{ $ref: '#/components/parameters/Id' }]
     patch:
       tags: [Motos]
-      summary: Editar moto
+      summary: Editar moto (solo Administrador)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/MotorcycleInput' }
+            schema: { $ref: '#/components/schemas/MotorcyclePatchInput' }
       responses:
         '200': { $ref: '#/components/responses/Motorcycle' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Motos]
-      summary: Eliminar moto
-      description: Rechaza la operación si la moto tiene citas o historial; usar confirmación en el cliente.
+      summary: Eliminar moto definitivamente (solo Administrador)
+      description: Solo permite eliminar si customerId es null y no tiene citas, lavadas, pagos, reseñas, fidelización ni historial de asociaciones.
       responses:
-        '204': { description: Eliminada }
+        '204': { description: Eliminada definitivamente }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /motorcycles/{id}/assignment:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    post:
+      tags: [Motos]
+      summary: Asociar o reasignar una moto a un cliente (solo Administrador)
+      description: Asocia una moto libre o reasigna una ya asociada dejando trazabilidad en motorcycle_customer_assignments. Idempotente si ya está asociada al mismo cliente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignmentInput' }
+      responses:
+        '200': { $ref: '#/components/responses/MotorcycleAssignment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [Motos]
+      summary: Desvincular moto de su cliente sin eliminarla (solo Administrador)
+      description: Cambia customerId a null y conserva la moto junto con todas sus citas, lavadas, pagos, reseñas, fidelización e historial. Idempotente si ya estaba desvinculada.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, nullable: true, maxLength: 500 }
+      responses:
+        '200': { $ref: '#/components/responses/MotorcycleUnlink' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /motorcycles/{id}/assignments:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - $ref: '#/components/parameters/Page'
+      - $ref: '#/components/parameters/PageSize'
+    get:
+      tags: [Motos]
+      summary: Consultar historial de asociaciones de una moto (solo Administrador)
+      responses:
+        '200': { $ref: '#/components/responses/MotorcycleAssignmentPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /services:
     get:
       tags: [Servicios]
@@ -756,6 +826,28 @@ components:
       description: Moto
       content:
         application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/Motorcycle' } } }] } }
+    MotorcycleAssignment:
+      description: Moto asociada o reasignada
+      content:
+        application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { $ref: '#/components/schemas/MotorcycleAssignment' } } }] } }
+    MotorcycleUnlink:
+      description: Moto desvinculada
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Envelope'
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [id, customerId]
+                    properties:
+                      id: { type: string, format: uuid }
+                      customerId: { type: string, format: uuid, nullable: true }
+    MotorcycleAssignmentPage:
+      description: Página de historial de asociaciones de moto
+      content: { application/json: { schema: { $ref: '#/components/schemas/MotorcycleAssignmentPage' } } }
     Service:
       description: Servicio
       content:
@@ -856,6 +948,12 @@ components:
     Unauthorized:
       description: No autorizado
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    Forbidden:
+      description: Sin permisos suficientes
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
+    NotFound:
+      description: Recurso no encontrado
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     Conflict:
       description: Conflicto de negocio
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
@@ -930,24 +1028,92 @@ components:
             motorcycles: { type: array, items: { $ref: '#/components/schemas/Motorcycle' } }
             pendingBalance: { type: integer, minimum: 0 }
             completedWashes: { type: integer, minimum: 0 }
+    MotorcycleCustomerSummary:
+      type: object
+      required: [id, name, username]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        username: { type: string }
     MotorcycleInput:
       type: object
       required: [brand, model, cc]
       properties:
-        customerId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid, nullable: true }
         brand: { type: string }
         model: { type: string }
         cc: { type: integer, minimum: 1 }
         nickname: { type: string, nullable: true }
         color: { type: string, nullable: true }
+    MotorcyclePatchInput:
+      type: object
+      properties:
+        customerId: { type: string, format: uuid, nullable: true }
+        brand: { type: string }
+        model: { type: string }
+        cc: { type: integer, minimum: 1 }
+        nickname: { type: string, nullable: true }
+        color: { type: string, nullable: true }
+        isActive: { type: boolean }
     Motorcycle:
       allOf:
         - $ref: '#/components/schemas/MotorcycleInput'
         - type: object
-          required: [id]
+          required: [id, customerId, createdAt, updatedAt]
           properties:
             id: { type: string, format: uuid }
+            customer:
+              allOf:
+                - $ref: '#/components/schemas/MotorcycleCustomerSummary'
+              nullable: true
+            hasHistory: { type: boolean }
             createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    AssignmentInput:
+      type: object
+      required: [customerId]
+      properties:
+        customerId: { type: string, format: uuid }
+        reason: { type: string, nullable: true, maxLength: 500 }
+    MotorcycleAssignment:
+      type: object
+      required: [id, brand, model, cc, customerId, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        brand: { type: string }
+        model: { type: string }
+        cc: { type: integer, minimum: 1 }
+        nickname: { type: string, nullable: true }
+        color: { type: string, nullable: true }
+        customerId: { type: string, format: uuid }
+        updatedAt: { type: string, format: date-time }
+    MotorcycleAssignmentAudit:
+      type: object
+      required: [id, motorcycleId, action, performedBy, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        motorcycleId: { type: string, format: uuid }
+        customerId: { type: string, format: uuid, nullable: true }
+        customer:
+          allOf:
+            - $ref: '#/components/schemas/MotorcycleCustomerSummary'
+          nullable: true
+        previousCustomerId: { type: string, format: uuid, nullable: true }
+        previousCustomer:
+          allOf:
+            - $ref: '#/components/schemas/MotorcycleCustomerSummary'
+          nullable: true
+        action: { type: string, enum: [assigned, unassigned, reassigned] }
+        performedBy:
+          type: object
+          required: [id, name, username, role]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            username: { type: string }
+            role: { type: string, enum: [Cliente, Lavador, Administrador] }
+        occurredAt: { type: string, format: date-time }
+        reason: { type: string, nullable: true }
     ServiceInput:
       type: object
       required: [name, price, durationMinutes]
@@ -1192,6 +1358,8 @@ components:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Customer' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     MotorcyclePage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Motorcycle' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    MotorcycleAssignmentPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/MotorcycleAssignmentAudit' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     ServicePage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Service' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     AppointmentPage:

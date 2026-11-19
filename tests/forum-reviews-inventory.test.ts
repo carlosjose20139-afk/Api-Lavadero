@@ -168,21 +168,22 @@ describe('Foro con auditoría inmutable, Reseñas, Inventario, Motos y Reportes'
   });
 
   it('impide eliminar moto con historial (409) y valida movimientos de inventario y reportes CSV/XLSX/PDF', async () => {
-    // La moto del seed ya tiene lavadas asociadas -> DELETE debe devolver 409
-    const deleteWithHistory = await request(ctx.app)
+    // La moto del seed está asociada y además tiene lavadas -> DELETE por admin devuelve 409
+    const deleteAssigned = await request(ctx.app)
       .delete(`/api/v1/motorcycles/${ctx.motoId}`)
-      .set('Authorization', `Bearer ${ctx.clienteToken}`);
-    expect(deleteWithHistory.status).toBe(409);
+      .set('Authorization', `Bearer ${ctx.adminToken}`);
+    expect(deleteAssigned.status).toBe(409);
+    expect(deleteAssigned.body.data.code).toBe('MOTORCYCLE_ASSIGNED');
 
-    // Una moto nueva sin citas ni lavadas sí puede eliminarse (204)
+    // Una moto nueva sin cliente ni historial sí puede eliminarse definitivamente (204)
     const newMoto = await request(ctx.app)
       .post('/api/v1/motorcycles')
-      .set('Authorization', `Bearer ${ctx.clienteToken}`)
+      .set('Authorization', `Bearer ${ctx.adminToken}`)
       .send({ brand: 'KTM', model: 'Duke 200', cc: 200 });
     expect(newMoto.status).toBe(201);
     const deleteClean = await request(ctx.app)
       .delete(`/api/v1/motorcycles/${newMoto.body.data.id}`)
-      .set('Authorization', `Bearer ${ctx.clienteToken}`);
+      .set('Authorization', `Bearer ${ctx.adminToken}`);
     expect(deleteClean.status).toBe(204);
 
     // Inventario: crear insumo, registrar salida y alerta isLowStock

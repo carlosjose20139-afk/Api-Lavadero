@@ -12,7 +12,7 @@ Backend productivo en **Node.js 22 + TypeScript + Express + PostgreSQL** para el
 
 ### Estructura modular
 
-- `migrations/`: migraciones SQL idempotentes (`001_initial_schema.sql`, `002_seed_shop_defaults.sql`).
+- `migrations/`: migraciones SQL idempotentes (`001_initial_schema.sql`, `002_seed_shop_defaults.sql`, `003_motorcycle_decoupling.sql`).
 - `src/modules/`: routers por dominio (`auth`, `customers`, `motorcycles`, `services`, `appointments`, `washRequests`, `notifications`, `loyalty`, `finance`, `inventory`, `employees`, `promotions`, `reviews`, `forum`, `reports`, `legal`).
 - `src/services/`: auditoría (`audit.service.ts`), notificaciones in-app + FCM (`notification.service.ts`), moderación (`moderation.service.ts`) y proceso programado de vencimientos (`scheduler.service.ts`).
 - `docs/api/openapi.yaml`: contrato OpenAPI 3.0.3 servido en `/api/docs`, `/api/v1/openapi.yaml` y `/api/v1/openapi.json`.
@@ -41,13 +41,13 @@ Backend productivo en **Node.js 22 + TypeScript + Express + PostgreSQL** para el
    ```
    Documentación interactiva disponible en `http://localhost:3000/api/docs` (o el puerto configurado en `PORT`).
 
-### Credenciales generadas por el seed de desarrollo
+### Credencial inicial generada por el seed
+
+El comando `npm run db:seed` (`src/db/seed.ts`) crea únicamente el usuario Administrador y deja limpias las tablas de clientes, empleados, motos, servicios, inventario y promociones:
 
 | Rol | Usuario | Contraseña |
 | --- | --- | --- |
 | Administrador | `admin` | `Admin1234*` |
-| Lavador | `lavador` | `Lavador1234*` |
-| Cliente | `mateo.moto` | `Cliente1234*` |
 
 ---
 
@@ -239,7 +239,7 @@ pg_restore --dbname="$DATABASE_URL" --clean --if-exists backup_los_malditos_2026
   "data": {
     "code": "MOTORCYCLE_HAS_HISTORY"
   },
-  "message": "La moto tiene citas o historial de lavadas asociado y no puede eliminarse. Puedes desactivarla mediante PATCH /motorcycles/2d31b8e2-2c30-4f7e-8a6b-7b2b7a982e10"
+  "message": "La moto tiene historial y no puede eliminarse definitivamente."
 }
 ```
 
@@ -271,4 +271,28 @@ pg_restore --dbname="$DATABASE_URL" --clean --if-exists backup_los_malditos_2026
   },
   "message": "Clientes consultados exitosamente"
 }
+```
+
+### 8. Flujo de motos independientes (solo Administrador)
+
+```bash
+# Crear moto sin cliente asignado
+curl -X POST https://apilosmalditos.jminternet.online/api/v1/motorcycles \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"brand":"Boxer","model":"CT 100","cc":100,"nickname":"La Guerrera"}'
+
+# Asociar o reasignar moto a un cliente
+curl -X POST https://apilosmalditos.jminternet.online/api/v1/motorcycles/$MOTO_ID/assignment \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"'$CUSTOMER_ID'"}'
+
+# Desvincular moto sin eliminar registro ni historial
+curl -X DELETE https://apilosmalditos.jminternet.online/api/v1/motorcycles/$MOTO_ID/assignment \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Consultar historial de asociaciones
+curl https://apilosmalditos.jminternet.online/api/v1/motorcycles/$MOTO_ID/assignments \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```

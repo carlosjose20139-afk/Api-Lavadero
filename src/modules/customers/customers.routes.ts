@@ -6,10 +6,12 @@ import {
   idParamSchema,
   isoDateTimeSchema,
   paginationQuerySchema,
+  uuidSchema,
   validateBody,
   validateParams,
   validateQuery,
 } from '../../middleware/validate.js';
+import { listCustomerMotorcycles } from '../motorcycles/motorcycles.service.js';
 import { recordAuditLog } from '../../services/audit.service.js';
 import {
   generateOpaqueToken,
@@ -23,6 +25,17 @@ import { toIsoBogota, toIsoBogotaNullable } from '../../utils/time.js';
 const listCustomersQuerySchema = paginationQuerySchema.extend({
   search: z.string().trim().optional(),
   status: z.enum(['active', 'blocked']).optional(),
+});
+
+const customerIdParamSchema = z.object({
+  customerId: uuidSchema,
+});
+
+const listCustomerMotorcyclesQuerySchema = paginationQuerySchema.extend({
+  includeInactive: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 // Estricto según contrato: solo name, username, password y termsAcceptedAt.
@@ -77,12 +90,13 @@ interface MotorcycleRow {
   nickname: string | null;
   color: string | null;
   created_at: Date | string;
+  updated_at: Date | string;
 }
 
 async function hydrateCustomer(db: DbExecutor, row: CustomerRow) {
   const [motosRes, washesRes] = await Promise.all([
     db.query<MotorcycleRow>(
-      `SELECT id, customer_id, brand, model, cc, nickname, color, created_at
+      `SELECT id, customer_id, brand, model, cc, nickname, color, created_at, updated_at
        FROM motorcycles
        WHERE customer_id = $1 AND is_active = TRUE
        ORDER BY created_at DESC`,
@@ -115,6 +129,7 @@ async function hydrateCustomer(db: DbExecutor, row: CustomerRow) {
       nickname: m.nickname,
       color: m.color,
       createdAt: toIsoBogota(m.created_at),
+      updatedAt: toIsoBogota(m.updated_at),
     })),
   };
 }
@@ -299,6 +314,39 @@ export function createCustomersRouter(db: DbClient): Router {
 
         const customer = await hydrateCustomer(db, row);
         return ok(res, customer, 'Detalle de cliente consultado exitosamente');
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.get(
+    '/:customerId/motorcycles',
+    authenticate(),
+    requireRoles('Administrador', 'Cliente'),
+    validateParams(customerIdParamSchema),
+    validateQuery(listCustomerMotorcyclesQuerySchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { customerId } = res.locals.params as { customerId: string };
+        const { page, pageSize, includeInactive } = res.locals.query as z.infer<
+          typeof listCustomerMotorcyclesQuerySchema
+        >;
+        const { items, total } = await listCustomerMotorcycles(
+          db,
+          actor,
+          customerId,
+          { page, pageSize, includeInactive },
+        );
+        return paginated(
+          res,
+          items,
+          page,
+          pageSize,
+          total,
+          'Motos del cliente consultadas exitosamente',
+        );
       } catch (err) {
         next(err);
       }
