@@ -1,67 +1,135 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { DbClient } from '../../db/index.js';
 import { createAuthMiddleware } from '../../middleware/auth.js';
 import {
-  isoDateTimeSchema,
+  idParamSchema,
   paginationQuerySchema,
   validateBody,
+  validateParams,
   validateQuery,
 } from '../../middleware/validate.js';
-import { recordAuditLog } from '../../services/audit.service.js';
-import { newUuid } from '../../utils/crypto.js';
-import { AppError, created, paginated } from '../../utils/response.js';
-import { toIsoBogota } from '../../utils/time.js';
+import { AppError, created, ok, paginated } from '../../utils/response.js';
+import {
+  createPromotion,
+  listPromotions,
+  softDeletePromotion,
+  updatePromotion,
+  updatePromotionStatus,
+} from './promotions.service.js';
 
 const listPromotionsQuerySchema = paginationQuerySchema.extend({
+  includeInactive: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   all: z
     .string()
     .optional()
     .transform((v) => v === 'true'),
 });
 
-const promotionInputSchema = z
+const numericInputSchema = z.union([
+  z.number().refine((v) => Number.isFinite(v), 'Debe ser un número válido'),
+  z
+    .string()
+    .trim()
+    .regex(/^-?\d+(?:\.\d+)?$/, 'Debe ser un valor numérico válido')
+    .transform((v) => Number(v)),
+]);
+
+const promotionCreateSchema = z
   .object({
-    title: z.string().trim().min(2).max(160),
-    description: z.string().trim().min(2).max(2000),
-    discountAmount: z.coerce.number().int().min(0).nullable().optional(),
-    discountPercent: z.coerce.number().min(0).max(100).nullable().optional(),
-    startsAt: isoDateTimeSchema,
-    endsAt: isoDateTimeSchema,
-    isActive: z.boolean().optional().default(true),
+    title: z
+      .string({ message: 'El título debe ser una cadena de texto' })
+      .trim()
+      .min(2, 'El título debe tener al menos 2 caracteres')
+      .max(160, 'El título no puede superar 160 caracteres'),
+    description: z
+      .string({ message: 'La descripción debe ser una cadena de texto' })
+      .trim()
+      .min(2, 'La descripción debe tener al menos 2 caracteres')
+      .max(2000, 'La descripción no puede superar 2000 caracteres'),
+    discountAmount: numericInputSchema.nullable().optional(),
+    discountPercent: numericInputSchema.nullable().optional(),
+    startsAt: z
+      .string({ message: 'startsAt debe ser una fecha ISO-8601 válida' })
+      .trim()
+      .min(1, 'startsAt es obligatorio'),
+    endsAt: z
+      .string({ message: 'endsAt debe ser una fecha ISO-8601 válida' })
+      .trim()
+      .min(1, 'endsAt es obligatorio'),
+    isActive: z
+      .boolean({ message: 'isActive debe ser booleano' })
+      .optional()
+      .default(true),
   })
   .strict();
 
-interface PromotionRow {
-  id: string;
-  title: string;
-  description: string;
-  discount_amount: number | null;
-  discount_percent: string | number | null;
-  starts_at: Date | string;
-  ends_at: Date | string;
-  is_active: boolean;
-}
+const promotionPatchSchema = z
+  .object({
+    title: z
+      .string({ message: 'El título debe ser una cadena de texto' })
+      .trim()
+      .min(2, 'El título debe tener al menos 2 caracteres')
+      .max(160, 'El título no puede superar 160 caracteres')
+      .optional(),
+    description: z
+      .string({ message: 'La descripción debe ser una cadena de texto' })
+      .trim()
+      .min(2, 'La descripción debe tener al menos 2 caracteres')
+      .max(2000, 'La descripción no puede superar 2000 caracteres')
+      .optional(),
+    discountAmount: numericInputSchema.nullable().optional(),
+    discountPercent: numericInputSchema.nullable().optional(),
+    startsAt: z
+      .string({ message: 'startsAt debe ser una fecha ISO-8601 válida' })
+      .trim()
+      .min(1, 'startsAt no puede estar vacío')
+      .optional(),
+    endsAt: z
+      .string({ message: 'endsAt debe ser una fecha ISO-8601 válida' })
+      .trim()
+      .min(1, 'endsAt no puede estar vacío')
+      .optional(),
+  })
+  .strict()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'Debes enviar al menos un campo para actualizar la promoción',
+  });
 
-function mapPromotion(row: PromotionRow) {
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description,
-    discountAmount:
-      row.discount_amount !== null ? Number(row.discount_amount) : null,
-    discountPercent:
-      row.discount_percent !== null ? Number(row.discount_percent) : null,
-    startsAt: toIsoBogota(row.starts_at),
-    endsAt: toIsoBogota(row.ends_at),
-    isActive: row.is_active,
+const promotionStatusSchema = z
+  .object({
+    isActive: z.boolean({
+      message: 'El campo isActive es obligatorio y debe ser booleano (true o false)',
+    }),
+  })
+  .strict();
+
+function requirePromotionAdmin() {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      next(new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación'));
+      return;
+    }
+    if (req.user.role !== 'Administrador') {
+      next(
+        new AppError(
+          403,
+          'PROMOTION_FORBIDDEN',
+          'Solo el administrador puede gestionar promociones',
+        ),
+      );
+      return;
+    }
+    next();
   };
 }
 
 export function createPromotionsRouter(db: DbClient): Router {
   const router = Router();
-  const { authenticate, optionalAuthenticate, requireRoles } =
-    createAuthMiddleware(db);
+  const { authenticate, optionalAuthenticate } = createAuthMiddleware(db);
 
   router.get(
     '/',
@@ -69,35 +137,16 @@ export function createPromotionsRouter(db: DbClient): Router {
     validateQuery(listPromotionsQuerySchema),
     async (req, res, next) => {
       try {
-        const { page, pageSize, all } = res.locals.query as z.infer<
+        const query = res.locals.query as z.infer<
           typeof listPromotionsQuerySchema
         >;
-        const showAll = all && req.user?.role === 'Administrador';
-        const whereSql = showAll
-          ? ''
-          : 'WHERE is_active = TRUE AND ends_at >= NOW()';
-
-        const countRes = await db.query<{ cnt: string | number }>(
-          `SELECT COUNT(*) AS cnt FROM promotions ${whereSql}`,
-        );
-        const total = Number(countRes.rows[0]?.cnt ?? 0);
-        const offset = (page - 1) * pageSize;
-
-        const rowsRes = await db.query<PromotionRow>(
-          `SELECT id, title, description, discount_amount, discount_percent,
-                  starts_at, ends_at, is_active
-           FROM promotions
-           ${whereSql}
-           ORDER BY starts_at DESC
-           LIMIT $1 OFFSET $2`,
-          [pageSize, offset],
-        );
+        const { items, total } = await listPromotions(db, req.user?.role, query);
 
         return paginated(
           res,
-          rowsRes.rows.map(mapPromotion),
-          page,
-          pageSize,
+          items,
+          query.page,
+          query.pageSize,
           total,
           'Promociones consultadas exitosamente',
         );
@@ -110,65 +159,85 @@ export function createPromotionsRouter(db: DbClient): Router {
   router.post(
     '/',
     authenticate(),
-    requireRoles('Administrador'),
-    validateBody(promotionInputSchema),
+    requirePromotionAdmin(),
+    validateBody(promotionCreateSchema),
     async (req, res, next) => {
       try {
         const actor = req.user!;
-        const body = req.body as z.infer<typeof promotionInputSchema>;
-        const startsAt = new Date(body.startsAt);
-        const endsAt = new Date(body.endsAt);
+        const body = req.body as z.infer<typeof promotionCreateSchema>;
+        const promo = await createPromotion(db, actor, body, req.clientIp);
 
-        if (endsAt <= startsAt) {
-          throw new AppError(
-            422,
-            'VALIDATION_ERROR',
-            'La fecha de fin debe ser posterior a la fecha de inicio',
-            { endsAt: 'Debe ser posterior a startsAt' },
-          );
-        }
+        return created(res, promo, 'Promoción creada exitosamente');
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
-        const id = newUuid();
-        const inserted = await db.withTransaction(async (tx) => {
-          const ins = await tx.query<PromotionRow>(
-            `INSERT INTO promotions (
-               id, title, description, discount_amount, discount_percent,
-               starts_at, ends_at, is_active, created_by
-             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, title, description, discount_amount, discount_percent,
-                       starts_at, ends_at, is_active`,
-            [
-              id,
-              body.title,
-              body.description,
-              body.discountAmount ?? null,
-              body.discountPercent ?? null,
-              startsAt,
-              endsAt,
-              body.isActive ?? true,
-              actor.id,
-            ],
-          );
+  router.patch(
+    '/:id',
+    authenticate(),
+    requirePromotionAdmin(),
+    validateParams(idParamSchema),
+    validateBody(promotionPatchSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const body = req.body as z.infer<typeof promotionPatchSchema>;
+        const updated = await updatePromotion(db, actor, id, body, req.clientIp);
 
-          await recordAuditLog(tx, {
-            actorId: actor.id,
-            actorRole: actor.role,
-            action: 'promotion_created',
-            entityType: 'promotion',
-            entityId: id,
-            ipAddress: req.clientIp,
-            changes: body,
-          });
+        return ok(res, updated, 'Promoción actualizada');
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
-          return ins.rows[0]!;
-        });
-
-        return created(
-          res,
-          mapPromotion(inserted),
-          'Promoción creada exitosamente',
+  router.patch(
+    '/:id/status',
+    authenticate(),
+    requirePromotionAdmin(),
+    validateParams(idParamSchema),
+    validateBody(promotionStatusSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const { isActive } = req.body as z.infer<typeof promotionStatusSchema>;
+        const updated = await updatePromotionStatus(
+          db,
+          actor,
+          id,
+          isActive,
+          req.clientIp,
         );
+
+        return ok(
+          res,
+          updated,
+          isActive
+            ? 'Promoción activada exitosamente'
+            : 'Promoción desactivada exitosamente',
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.delete(
+    '/:id',
+    authenticate(),
+    requirePromotionAdmin(),
+    validateParams(idParamSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const deleted = await softDeletePromotion(db, actor, id, req.clientIp);
+
+        return ok(res, deleted, 'Promoción eliminada exitosamente');
       } catch (err) {
         next(err);
       }

@@ -19,8 +19,24 @@ export function stableStringify(value: unknown): string {
 
 export function validateIdempotencyHeader(required = true) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const raw = req.headers['x-idempotency-key'];
-    const key = Array.isArray(raw) ? raw[0] : raw;
+    const rawPrimary = req.headers['x-idempotency-key'];
+    const rawStandard = req.headers['idempotency-key'];
+    const primaryKey = Array.isArray(rawPrimary) ? rawPrimary[0] : rawPrimary;
+    const standardKey = Array.isArray(rawStandard) ? rawStandard[0] : rawStandard;
+
+    if (primaryKey && standardKey && primaryKey !== standardKey) {
+      next(
+        new AppError(
+          422,
+          'INVALID_IDEMPOTENCY_KEY',
+          'Los encabezados Idempotency-Key y X-Idempotency-Key no pueden tener valores distintos',
+          { 'Idempotency-Key': 'Conflictivo con X-Idempotency-Key' },
+        ),
+      );
+      return;
+    }
+
+    const key = primaryKey ?? standardKey;
 
     if (!key) {
       if (required) {
@@ -28,7 +44,7 @@ export function validateIdempotencyHeader(required = true) {
           new AppError(
             422,
             'IDEMPOTENCY_KEY_REQUIRED',
-            'El encabezado X-Idempotency-Key es obligatorio para esta operación',
+            'El encabezado Idempotency-Key o X-Idempotency-Key es obligatorio para esta operación',
             { 'X-Idempotency-Key': 'Requerido (16 a 100 caracteres)' },
           ),
         );
@@ -43,7 +59,7 @@ export function validateIdempotencyHeader(required = true) {
         new AppError(
           422,
           'INVALID_IDEMPOTENCY_KEY',
-          'El encabezado X-Idempotency-Key debe tener entre 16 y 100 caracteres',
+          'La clave de idempotencia debe tener entre 16 y 100 caracteres',
           { 'X-Idempotency-Key': 'Longitud inválida (16 a 100 caracteres)' },
         ),
       );

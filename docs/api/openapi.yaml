@@ -497,14 +497,44 @@ paths:
   /loyalty/me:
     get:
       tags: [Fidelización]
-      summary: Tarjeta 7+1 del cliente actual
+      summary: Tarjeta 7+1 del cliente autenticado
+      description: Roles permitidos Cliente, Lavador y Administrador. Devuelve sellos, lavadas completadas, token QR con expiración y recompensas.
+      security: [{ bearerAuth: [] }]
       responses:
-        '200': { $ref: '#/components/responses/Loyalty' }
+        '200':
+          description: Tarjeta de fidelización consultada
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltyCard' } }
+              example:
+                data:
+                  id: 33333333-3333-4333-8333-333333333333
+                  customerId: 11111111-1111-4111-8111-111111111111
+                  stamps: 4
+                  completedWashes: 11
+                  qrToken: LM-token-seguro
+                  qrTokenExpiresAt: '2026-11-20T12:00:00.000-05:00'
+                  updatedAt: '2026-11-19T12:00:00.000-05:00'
+                  rewards:
+                    - id: 22222222-2222-4222-8222-222222222222
+                      customerId: 11111111-1111-4111-8111-111111111111
+                      title: Lavada gratis
+                      validFrom: '2026-11-01T00:00:00.000-05:00'
+                      validUntil: '2026-12-01T23:59:59.000-05:00'
+                      status: available
+                      source: automatic
+                message: Información de fidelización consultada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /loyalty/stamps:
     post:
       tags: [Fidelización]
       summary: Registrar sello por lavada pagada
-      description: Solo una vez por lavada; el backend debe validar pago y evitar duplicados.
+      description: Solo Administrador o Lavador autorizado. Valida estado paid, evita duplicados por washRequestId, respeta X-Idempotency-Key / Idempotency-Key, al llegar a 7 crea recompensa automática y reinicia sellos a 0.
+      security: [{ bearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
@@ -512,21 +542,69 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [washRequestId]
               properties: { washRequestId: { type: string, format: uuid } }
+            example:
+              washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
       responses:
         '201': { $ref: '#/components/responses/Loyalty' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /loyalty/rewards:
     get:
       tags: [Fidelización]
       summary: Premios disponibles y asignados
-      parameters: [{ in: query, name: customerId, schema: { type: string, format: uuid } }]
+      description: Cliente solo consulta sus propias recompensas. Administrador y Lavador autorizado pueden consultar y filtrar por customerId y status.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: customerId, schema: { type: string, format: uuid } }
+        - { in: query, name: status, schema: { type: string, enum: [available, redeemed, expired, cancelled] } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
       responses:
         '200': { $ref: '#/components/responses/LoyaltyPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/rewards/{id}:
+    delete:
+      tags: [Fidelización]
+      summary: Cancelar recompensa disponible
+      description: Solo Administrador. Cambia el estado a cancelled sin borrar historial. Rechaza recompensas redeemed, expired o cancelled con 409.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoyaltyReasonInput' }
+            example:
+              reason: Recompensa anulada por ajuste administrativo
+      responses:
+        '200':
+          description: Recompensa cancelada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltyReward' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /loyalty/rewards/{id}/redeem:
     post:
       tags: [Fidelización]
       summary: Redimir premio dentro del periodo asignado
+      description: Solo el cliente propietario o Administrador autorizado. Requiere X-Idempotency-Key / Idempotency-Key, valida vigencia (validFrom - validUntil) y pertenencia de appointmentId.
+      security: [{ bearerAuth: [] }]
       parameters:
         - { $ref: '#/components/parameters/Id' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -535,10 +613,185 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 appointmentId: { type: string, format: uuid, nullable: true }
+            example:
+              appointmentId: 55555555-5555-4555-8555-555555555555
       responses:
         '200': { $ref: '#/components/responses/Loyalty' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/customers:
+    get:
+      tags: [Fidelización]
+      summary: Consultar fidelización de todos los clientes
+      description: Solo Administrador. Soporta búsqueda, filtro de estado y ordenamiento paginado.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: search, schema: { type: string, maxLength: 120 } }
+        - { in: query, name: status, schema: { type: string, enum: [all, available_reward, no_reward, blocked], default: all } }
+        - { in: query, name: sort, schema: { type: string, enum: [stamps_desc, completed_washes_desc, newest], default: newest } }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200': { $ref: '#/components/responses/LoyaltyCustomerPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/customers/{customerId}:
+    get:
+      tags: [Fidelización]
+      summary: Consultar detalle e historial de fidelización de un cliente
+      description: Solo Administrador. Devuelve sellos actuales, historial de sellos, lavadas asociadas, recompensas por estado y auditoría de Fidelización.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: customerId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Detalle e historial de fidelización del cliente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltyCustomerDetail' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/customers/{customerId}/stamps:
+    post:
+      tags: [Fidelización]
+      summary: Registrar sello administrativo o autorizado sobre una lavada del cliente
+      description: Solo Administrador o Lavador autorizado. Exige Idempotency-Key / X-Idempotency-Key, valida pertenencia de washRequestId al customerId y estado paid.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: customerId
+          required: true
+          schema: { type: string, format: uuid }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoyaltyCustomerStampInput' }
+            example:
+              washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+              reason: Lavada pagada registrada en mostrador
+      responses:
+        '201': { $ref: '#/components/responses/Loyalty' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/customers/{customerId}/stamps/{stampId}:
+    delete:
+      tags: [Fidelización]
+      summary: Retirar o revertir un sello de fidelización
+      description: Solo Administrador. Marca el sello como reversed sin borrar historial; si generó recompensa available la cancela y bloquea con 409 si ya fue redeemed.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: customerId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: stampId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoyaltyReasonInput' }
+            example:
+              reason: Sello registrado por error
+      responses:
+        '200':
+          description: Sello revertido exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          stamp: { $ref: '#/components/schemas/LoyaltyStamp' }
+                          card: { $ref: '#/components/schemas/LoyaltyCard' }
+                          revertedReward:
+                            allOf: [{ $ref: '#/components/schemas/LoyaltyReward' }]
+                            nullable: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/customers/{customerId}/rewards:
+    post:
+      tags: [Fidelización]
+      summary: Asignar recompensa manual a un cliente
+      description: Solo Administrador. Crea recompensa en estado available interpretando fechas en America/Bogota y validando rango y vigencia máxima.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: customerId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoyaltyManualRewardInput' }
+            example:
+              title: Lavada gratis
+              validFrom: '2026-11-20T00:00:00-05:00'
+              validUntil: '2026-11-25T23:59:59-05:00'
+              reason: Premio especial autorizado por administración
+      responses:
+        '201':
+          description: Recompensa manual asignada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltyReward' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /loyalty/expire:
+    post:
+      tags: [Fidelización]
+      summary: Expirar recompensas cuya vigencia ha terminado
+      description: Solo Administrador. Operación idempotente que cambia recompensas available vencidas a expired, audita y notifica a los clientes afectados.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Proceso de expiración ejecutado
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltyExpireResult' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /payments:
     post:
       tags: [Finanzas]
@@ -630,19 +883,257 @@ paths:
     get:
       tags: [Promociones]
       security: []
-      summary: Listar promociones vigentes
+      summary: Listar promociones vigentes (o todas las no eliminadas para Administrador)
+      description: |
+        - Público, Cliente y Lavador: devuelve únicamente promociones activas (`isActive = true`), no eliminadas (`deletedAt = null`) y cuya fecha actual esté dentro de `[startsAt, endsAt]`.
+        - Administrador: puede consultar todas las promociones no eliminadas (incluyendo inactivas y vencidas) enviando `includeInactive=true` con token Bearer JWT de Administrador.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - in: query
+          name: includeInactive
+          required: false
+          description: Solo efectivo cuando el usuario autenticado tiene rol Administrador. Incluye promociones inactivas y vencidas (excluye eliminadas lógicamente).
+          schema: { type: boolean, default: false }
+        - in: query
+          name: all
+          required: false
+          description: Alias compatible para `includeInactive` (solo Administrador).
+          schema: { type: boolean, default: false }
       responses:
         '200': { $ref: '#/components/responses/PromotionPage' }
     post:
       tags: [Promociones]
-      summary: Crear promoción
+      security:
+        - bearerAuth: []
+      summary: Crear promoción (solo Administrador)
+      description: |
+        Rol permitido: `Administrador`.
+        Sanitiza `title` y `description` contra HTML/scripts. Valida fechas ISO-8601 (`endsAt > startsAt`) y que se defina descuento fijo (`discountAmount` >= 0) o porcentual (`discountPercent` entre 0 y 100), sin combinar ambos.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PromotionInput' }
+            example:
+              title: Martes de Cadena Limpia
+              description: Descuento especial en Lavada Detallada los martes en el lavadero
+              discountPercent: 15
+              startsAt: '2026-12-01T00:00:00.000Z'
+              endsAt: '2026-12-31T23:59:59.000Z'
+              isActive: true
       responses:
         '201': { $ref: '#/components/responses/Promotion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos (solo Administrador; código PROMOTION_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_FORBIDDEN }
+                message: Solo el administrador puede gestionar promociones
+        '422':
+          description: Error de validación (VALIDATION_ERROR, PROMOTION_INVALID_DATES o PROMOTION_INVALID_DISCOUNT)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              examples:
+                fechasInvalidas:
+                  summary: Rango de fechas inválido
+                  value:
+                    data:
+                      code: PROMOTION_INVALID_DATES
+                      fields: { endsAt: Debe ser posterior a startsAt }
+                    message: La fecha de fin debe ser posterior a la fecha de inicio
+                descuentoInvalido:
+                  summary: Descuento inválido
+                  value:
+                    data:
+                      code: PROMOTION_INVALID_DISCOUNT
+                      fields: { discountPercent: Debe estar entre 0 y 100 }
+                    message: El porcentaje de descuento debe estar entre 0 y 100
+  /promotions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      tags: [Promociones]
+      security:
+        - bearerAuth: []
+      summary: Editar promoción parcialmente (solo Administrador)
+      description: |
+        Rol permitido: `Administrador`.
+        Permite actualizar parcialmente `title`, `description`, `discountAmount`, `discountPercent`, `startsAt` y `endsAt`.
+        Aplica las mismas reglas de sanitización y validación que la creación y registra auditoría con valores anteriores y nuevos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionUpdateInput' }
+            example:
+              title: Lavada básica de temporada
+              description: Descuento especial para clientes frecuentes
+              discountPercent: 15
+              startsAt: '2026-12-01T00:00:00.000Z'
+              endsAt: '2026-12-31T23:59:59.000Z'
+      responses:
+        '200':
+          description: Promoción actualizada
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Promotion' }
+              example:
+                data:
+                  id: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+                  title: Lavada básica de temporada
+                  description: Descuento especial para clientes frecuentes
+                  discountAmount: null
+                  discountPercent: 15
+                  startsAt: '2026-11-30T19:00:00.000-05:00'
+                  endsAt: '2026-12-31T18:59:59.000-05:00'
+                  isActive: true
+                  createdAt: '2026-11-19T10:00:00.000-05:00'
+                  updatedAt: '2026-11-19T10:15:00.000-05:00'
+                  deletedAt: null
+                message: Promoción actualizada
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos (código PROMOTION_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_FORBIDDEN }
+                message: Solo el administrador puede gestionar promociones
+        '404':
+          description: Promoción no encontrada (código PROMOTION_NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_NOT_FOUND }
+                message: Promoción no encontrada
+        '422':
+          description: Error de validación (VALIDATION_ERROR, PROMOTION_INVALID_DATES o PROMOTION_INVALID_DISCOUNT)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    delete:
+      tags: [Promociones]
+      security:
+        - bearerAuth: []
+      summary: Eliminar lógicamente una promoción (solo Administrador)
+      description: |
+        Rol permitido: `Administrador`.
+        Marca `deletedAt` y desactiva `isActive = false` conservando auditoría, citas, pagos, clientes, motos y demás registros históricos.
+      responses:
+        '200':
+          description: Promoción eliminada lógicamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Promotion' }
+              example:
+                data:
+                  id: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+                  title: Lavada básica de temporada
+                  description: Descuento especial para clientes frecuentes
+                  discountAmount: null
+                  discountPercent: 15
+                  startsAt: '2026-11-30T19:00:00.000-05:00'
+                  endsAt: '2026-12-31T18:59:59.000-05:00'
+                  isActive: false
+                  createdAt: '2026-11-19T10:00:00.000-05:00'
+                  updatedAt: '2026-11-19T10:30:00.000-05:00'
+                  deletedAt: '2026-11-19T10:30:00.000-05:00'
+                message: Promoción eliminada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos (código PROMOTION_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_FORBIDDEN }
+                message: Solo el administrador puede gestionar promociones
+        '404':
+          description: Promoción no encontrada (código PROMOTION_NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_NOT_FOUND }
+                message: Promoción no encontrada
+  /promotions/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      tags: [Promociones]
+      security:
+        - bearerAuth: []
+      summary: Activar o desactivar promoción (solo Administrador)
+      description: |
+        Rol permitido: `Administrador`.
+        Cambia `isActive` sin borrar la promoción ni su historial y registra auditoría (`promotion_activated` o `promotion_deactivated`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromotionStatusInput' }
+            example:
+              isActive: false
+      responses:
+        '200':
+          description: Estado de promoción actualizado
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Promotion' }
+              example:
+                data:
+                  id: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+                  title: Lavada básica de temporada
+                  description: Descuento especial para clientes frecuentes
+                  discountAmount: null
+                  discountPercent: 15
+                  startsAt: '2026-11-30T19:00:00.000-05:00'
+                  endsAt: '2026-12-31T18:59:59.000-05:00'
+                  isActive: false
+                  createdAt: '2026-11-19T10:00:00.000-05:00'
+                  updatedAt: '2026-11-19T10:20:00.000-05:00'
+                  deletedAt: null
+                message: Promoción desactivada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos (código PROMOTION_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_FORBIDDEN }
+                message: Solo el administrador puede gestionar promociones
+        '404':
+          description: Promoción no encontrada (código PROMOTION_NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: PROMOTION_NOT_FOUND }
+                message: Promoción no encontrada
+        '422': { $ref: '#/components/responses/ValidationError' }
   /reviews:
     get:
       tags: [Reseñas]
@@ -687,11 +1178,24 @@ paths:
       tags: [Foro]
       security: []
       summary: Listar publicaciones del foro
-      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/PageSize' }]
+      description: |
+        Devuelve publicaciones ordenadas de la más reciente a la más antigua, con sus respuestas (`replies`) ordenadas de la más antigua a la más reciente.
+        - Público, Cliente y Lavador: no ven publicaciones ni respuestas eliminadas (`deletedAt != null`).
+        - Administrador: puede enviar `includeDeleted=true` para incluir publicaciones y respuestas eliminadas para moderación.
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - in: query
+          name: includeDeleted
+          required: false
+          description: Solo efectivo cuando el usuario autenticado tiene rol Administrador. Incluye publicaciones y respuestas con `deletedAt` no nulo.
+          schema: { type: boolean, default: false }
       responses:
         '200': { $ref: '#/components/responses/ForumPage' }
     post:
       tags: [Foro]
+      security:
+        - bearerAuth: []
       summary: Crear publicación
       requestBody:
         required: true
@@ -700,10 +1204,14 @@ paths:
             schema: { $ref: '#/components/schemas/ForumInput' }
       responses:
         '201': { $ref: '#/components/responses/ForumPost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /forum/posts/{id}:
     parameters: [{ $ref: '#/components/parameters/Id' }]
     patch:
       tags: [Foro]
+      security:
+        - bearerAuth: []
       summary: Editar publicación
       requestBody:
         required: true
@@ -712,33 +1220,174 @@ paths:
             schema: { type: object, required: [content], properties: { content: { type: string } } }
       responses:
         '200': { $ref: '#/components/responses/ForumPost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     delete:
       tags: [Foro]
+      security:
+        - bearerAuth: []
       summary: Eliminar publicación propia o moderar como administrador
       responses:
         '204': { description: Eliminada }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /forum/posts/{id}/replies:
     post:
       tags: [Foro]
+      security:
+        - bearerAuth: []
       summary: Responder publicación
+      description: |
+        Roles permitidos: `Cliente`, `Lavador` y `Administrador` autenticados.
+        Rechaza contenido vacío, mayor a 5000 caracteres, HTML/XSS o lenguaje ofensivo (`FORUM_REPLY_INVALID_CONTENT`). Registra auditoría en `forum_audits` y `audit_logs`.
       parameters: [{ $ref: '#/components/parameters/Id' }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [content], properties: { content: { type: string } } }
+            schema: { $ref: '#/components/schemas/ForumReplyInput' }
+            example:
+              content: En el lavadero usamos Motul C2 o C4 para temporada de lluvia.
       responses:
         '201': { $ref: '#/components/responses/ForumPost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /forum/replies/{id}:
+    parameters: [{ $ref: '#/components/parameters/Id' }]
+    patch:
+      tags: [Foro]
+      security:
+        - bearerAuth: []
+      summary: Editar respuesta del foro (autor o Administrador por moderación)
+      description: |
+        Roles permitidos:
+        - `Cliente` y `Lavador`: solo pueden editar sus propias respuestas.
+        - `Administrador`: puede editar cualquier respuesta por moderación.
+        Valida contenido obligatorio (1 a 5000 caracteres), rechaza HTML/scripts/XSS y lenguaje ofensivo (`FORUM_REPLY_INVALID_CONTENT`), actualiza `editedAt` y registra auditoría en `forum_audits` y `audit_logs`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForumReplyInput' }
+            example:
+              content: Contenido corregido de la respuesta con recomendación actualizada.
+      responses:
+        '200':
+          description: Respuesta actualizada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ForumReply' }
+              example:
+                data:
+                  id: 7a11b22c-33d4-45e6-87f8-901234567890
+                  postId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                  authorId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                  authorName: Mateo Motero
+                  content: Contenido corregido de la respuesta con recomendación actualizada.
+                  createdAt: '2026-11-19T10:00:00.000-05:00'
+                  editedAt: '2026-11-19T10:10:00.000-05:00'
+                  deletedAt: null
+                message: Respuesta actualizada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos sobre esta respuesta (código FORUM_REPLY_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: FORUM_REPLY_FORBIDDEN }
+                message: Solo el autor o el administrador pueden editar esta respuesta
+        '404':
+          description: Respuesta no encontrada (código FORUM_REPLY_NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: FORUM_REPLY_NOT_FOUND }
+                message: Respuesta no encontrada
+        '422':
+          description: Contenido inválido, HTML/XSS o lenguaje ofensivo (FORUM_REPLY_INVALID_CONTENT o VALIDATION_ERROR)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data:
+                  code: FORUM_REPLY_INVALID_CONTENT
+                  fields: { content: No se permite HTML, scripts ni etiquetas peligrosas }
+                message: El contenido contiene HTML, etiquetas o scripts no permitidos
+    delete:
+      tags: [Foro]
+      security:
+        - bearerAuth: []
+      summary: Eliminar lógicamente una respuesta del foro (autor o Administrador)
+      description: |
+        Roles permitidos:
+        - `Cliente` y `Lavador`: solo pueden eliminar sus propias respuestas.
+        - `Administrador`: puede eliminar cualquier respuesta por moderación.
+        Marca `deletedAt` sin borrar físicamente la respuesta, conserva la publicación padre y las demás respuestas, y registra auditoría en `forum_audits` y `audit_logs`.
+      responses:
+        '200':
+          description: Respuesta eliminada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [id, deletedAt]
+                        properties:
+                          id: { type: string, format: uuid }
+                          deletedAt: { type: string, format: date-time }
+              example:
+                data:
+                  id: 7a11b22c-33d4-45e6-87f8-901234567890
+                  deletedAt: '2026-11-19T10:15:00.000-05:00'
+                message: Respuesta eliminada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Sin permisos sobre esta respuesta (código FORUM_REPLY_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: FORUM_REPLY_FORBIDDEN }
+                message: Solo el autor o el administrador pueden eliminar esta respuesta
+        '404':
+          description: Respuesta no encontrada (código FORUM_REPLY_NOT_FOUND)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+              example:
+                data: { code: FORUM_REPLY_NOT_FOUND }
+                message: Respuesta no encontrada
+        '422': { $ref: '#/components/responses/ValidationError' }
   /forum/audit:
     get:
       tags: [Foro]
-      summary: Historial de edición, eliminación y moderación
+      security:
+        - bearerAuth: []
+      summary: Historial de edición, eliminación y moderación de publicaciones y respuestas (solo Administrador)
       parameters:
         - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
         - { in: query, name: actorId, schema: { type: string, format: uuid } }
         - { in: query, name: action, schema: { type: string, enum: [created, edited, deleted, moderated] } }
+        - { in: query, name: targetType, schema: { type: string, enum: [forum_post, forum_reply] } }
       responses:
         '200': { $ref: '#/components/responses/AuditPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /reports/dashboard:
     get:
       tags: [Reportes]
@@ -919,8 +1568,11 @@ components:
       description: Página de notificaciones
       content: { application/json: { schema: { $ref: '#/components/schemas/NotificationPage' } } }
     LoyaltyPage:
-      description: Página de premios
+      description: Página de tarjetas y recompensas de fidelización
       content: { application/json: { schema: { $ref: '#/components/schemas/LoyaltyPage' } } }
+    LoyaltyCustomerPage:
+      description: Página de clientes en fidelización
+      content: { application/json: { schema: { $ref: '#/components/schemas/LoyaltyCustomerPage' } } }
     ExpensePage:
       description: Página de gastos
       content: { application/json: { schema: { $ref: '#/components/schemas/ExpensePage' } } }
@@ -1207,20 +1859,43 @@ components:
             employeeCommission: { type: integer, minimum: 0 }
     PromotionInput:
       type: object
+      additionalProperties: false
       required: [title, description, startsAt, endsAt]
       properties:
-        title: { type: string }
-        description: { type: string }
+        title: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, minLength: 2, maxLength: 2000 }
         discountAmount: { type: integer, minimum: 0, nullable: true }
         discountPercent: { type: number, minimum: 0, maximum: 100, nullable: true }
         startsAt: { type: string, format: date-time }
         endsAt: { type: string, format: date-time }
         isActive: { type: boolean, default: true }
+    PromotionUpdateInput:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 2, maxLength: 160 }
+        description: { type: string, minLength: 2, maxLength: 2000 }
+        discountAmount: { type: integer, minimum: 0, nullable: true }
+        discountPercent: { type: number, minimum: 0, maximum: 100, nullable: true }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+    PromotionStatusInput:
+      type: object
+      additionalProperties: false
+      required: [isActive]
+      properties:
+        isActive: { type: boolean }
     Promotion:
       allOf:
         - $ref: '#/components/schemas/PromotionInput'
         - type: object
-          properties: { id: { type: string, format: uuid } }
+          required: [id, createdAt, updatedAt, deletedAt]
+          properties:
+            id: { type: string, format: uuid }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+            deletedAt: { type: string, format: date-time, nullable: true }
     Review:
       type: object
       required: [id, customerName, rating, comment, createdAt]
@@ -1300,29 +1975,163 @@ components:
         - $ref: '#/components/schemas/EmployeeInput'
         - type: object
           properties: { id: { type: string, format: uuid } }
+    LoyaltyReward:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        customerId: { type: string, format: uuid }
+        title: { type: string }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+        status: { type: string, enum: [available, redeemed, expired, cancelled] }
+        source: { type: string, enum: [automatic, manual] }
+        sourceStampId: { type: string, format: uuid, nullable: true }
+        appointmentId: { type: string, format: uuid, nullable: true }
+        reason: { type: string, nullable: true }
+        redeemedAt: { type: string, format: date-time, nullable: true }
+        cancelledAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LoyaltyStamp:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        loyaltyCardId: { type: string, format: uuid, nullable: true }
+        customerId: { type: string, format: uuid }
+        washRequestId: { type: string, format: uuid }
+        actorId: { type: string, format: uuid, nullable: true }
+        actorName: { type: string, nullable: true }
+        status: { type: string, enum: [active, reversed] }
+        reason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        reversedAt: { type: string, format: date-time, nullable: true }
+        reversedBy: { type: string, format: uuid, nullable: true }
+        reversedByName: { type: string, nullable: true }
     LoyaltyCard:
       type: object
       properties:
+        id: { type: string, format: uuid }
         customerId: { type: string, format: uuid }
         stamps: { type: integer, minimum: 0, maximum: 7 }
         completedWashes: { type: integer, minimum: 0 }
         qrToken: { type: string }
+        qrTokenExpiresAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
         rewards:
           type: array
-          items:
-            type: object
-            properties:
-              id: { type: string, format: uuid }
-              title: { type: string }
-              validFrom: { type: string, format: date-time }
-              validUntil: { type: string, format: date-time }
-              status: { type: string, enum: [available, redeemed, expired] }
+          items: { $ref: '#/components/schemas/LoyaltyReward' }
+    LoyaltyCustomerSummary:
+      type: object
+      properties:
+        customerId: { type: string, format: uuid }
+        customerName: { type: string }
+        username: { type: string }
+        isActive: { type: boolean }
+        stamps: { type: integer, minimum: 0, maximum: 7 }
+        completedWashes: { type: integer, minimum: 0 }
+        availableRewards: { type: integer, minimum: 0 }
+        expiredRewards: { type: integer, minimum: 0 }
+        lastWashAt: { type: string, format: date-time, nullable: true }
+    LoyaltyAuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actorId: { type: string, format: uuid, nullable: true }
+        actorRole: { type: string, nullable: true }
+        actorName: { type: string, nullable: true }
+        customerId: { type: string, format: uuid }
+        action:
+          type: string
+          enum: [loyalty_stamp_created, loyalty_stamp_reversed, loyalty_reward_created, loyalty_reward_redeemed, loyalty_reward_cancelled, loyalty_reward_expired, loyalty_reward_moderated]
+        targetId: { type: string, format: uuid, nullable: true }
+        targetType: { type: string, enum: [loyalty_stamp, loyalty_reward, loyalty_card] }
+        before: { type: object, nullable: true, additionalProperties: true }
+        after: { type: object, nullable: true, additionalProperties: true }
+        reason: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    LoyaltyCustomerDetail:
+      type: object
+      properties:
+        customer:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            username: { type: string }
+            isActive: { type: boolean }
+        card: { $ref: '#/components/schemas/LoyaltyCard' }
+        stamps: { type: integer }
+        completedWashes: { type: integer }
+        stampsHistory:
+          type: array
+          items: { $ref: '#/components/schemas/LoyaltyStamp' }
+        stampWashes:
+          type: array
+          items: { type: object, additionalProperties: true }
+        rewards:
+          type: object
+          properties:
+            available: { type: array, items: { $ref: '#/components/schemas/LoyaltyReward' } }
+            redeemed: { type: array, items: { $ref: '#/components/schemas/LoyaltyReward' } }
+            expired: { type: array, items: { $ref: '#/components/schemas/LoyaltyReward' } }
+            cancelled: { type: array, items: { $ref: '#/components/schemas/LoyaltyReward' } }
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/LoyaltyAuditEvent' }
+        updatedAt: { type: string, format: date-time }
+    LoyaltyCustomerStampInput:
+      type: object
+      additionalProperties: false
+      required: [washRequestId]
+      properties:
+        washRequestId: { type: string, format: uuid }
+        reason: { type: string, maxLength: 500 }
+    LoyaltyManualRewardInput:
+      type: object
+      additionalProperties: false
+      required: [title, validFrom, validUntil]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 160 }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time }
+        reason: { type: string, maxLength: 500 }
+    LoyaltyReasonInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string, maxLength: 500 }
+    LoyaltyExpireResult:
+      type: object
+      properties:
+        expiredCount: { type: integer }
+        expiredRewardIds: { type: array, items: { type: string, format: uuid } }
+        executedAt: { type: string, format: date-time }
     ForumInput:
       type: object
+      additionalProperties: false
       required: [content]
       properties:
         title: { type: string, maxLength: 160 }
         content: { type: string, maxLength: 5000 }
+    ForumReplyInput:
+      type: object
+      additionalProperties: false
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 5000 }
+    ForumReply:
+      type: object
+      required: [id, postId, authorId, authorName, content, createdAt, editedAt, deletedAt]
+      properties:
+        id: { type: string, format: uuid }
+        postId: { type: string, format: uuid }
+        authorId: { type: string, format: uuid }
+        authorName: { type: string }
+        content: { type: string }
+        createdAt: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time, nullable: true }
+        deletedAt: { type: string, format: date-time, nullable: true }
     ForumPost:
       type: object
       properties:
@@ -1331,19 +2140,36 @@ components:
         authorName: { type: string }
         title: { type: string }
         content: { type: string }
+        createdAt: { type: string, format: date-time }
         editedAt: { type: string, format: date-time, nullable: true }
         deletedAt: { type: string, format: date-time, nullable: true }
-        replies: { type: array, items: { type: object, additionalProperties: true } }
+        replies:
+          type: array
+          items: { $ref: '#/components/schemas/ForumReply' }
     AuditEvent:
       type: object
       properties:
         id: { type: string, format: uuid }
         actorId: { type: string, format: uuid }
         actorName: { type: string }
-        action: { type: string }
+        action: { type: string, enum: [created, edited, deleted, moderated] }
+        targetId: { type: string, format: uuid }
+        targetType: { type: string, enum: [forum_post, forum_reply] }
+        before:
+          type: object
+          nullable: true
+          properties:
+            content: { type: string }
+        after:
+          type: object
+          nullable: true
+          properties:
+            content: { type: string }
+        createdAt: { type: string, format: date-time }
         occurredAt: { type: string, format: date-time }
         previousContent: { type: string, nullable: true }
         newContent: { type: string, nullable: true }
+        ipAddress: { type: string, nullable: true }
     DashboardReport:
       type: object
       properties:
@@ -1370,6 +2196,8 @@ components:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Notification' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     LoyaltyPage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/LoyaltyCard' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    LoyaltyCustomerPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/LoyaltyCustomerSummary' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     ExpensePage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Expense' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     IncomePage:

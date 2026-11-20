@@ -99,7 +99,8 @@ describe('Fidelización 7+1, Pagos Manuales y Finanzas', () => {
         .set('X-Idempotency-Key', `idem-loy-s-000000${i}`)
         .send({ washRequestId: washId });
       expect(stampRes.status).toBe(201);
-      expect(stampRes.body.data.stamps).toBe(i);
+      expect(stampRes.body.data.stamps).toBe(i === 7 ? 0 : i);
+      expect(stampRes.body.data.completedWashes).toBe(i);
       lastCardRewards = stampRes.body.data.rewards;
 
       // Sello duplicado con otra key falla con 409

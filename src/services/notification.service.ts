@@ -19,6 +19,11 @@ export type NotificationType =
   | 'wash_ready'
   | 'appointment_reminder'
   | 'reward_assigned'
+  | 'loyalty_stamp_created'
+  | 'loyalty_stamp_reversed'
+  | 'loyalty_reward_redeemed'
+  | 'loyalty_reward_cancelled'
+  | 'loyalty_reward_expired'
   | 'pending_charge'
   | 'moderation'
   | 'data_request';

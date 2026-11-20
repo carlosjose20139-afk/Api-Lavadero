@@ -240,9 +240,9 @@ export function createCustomersRouter(db: DbClient): Router {
           );
 
           await tx.query(
-            `INSERT INTO loyalty_cards (customer_id, stamps, completed_washes, qr_token)
-             VALUES ($1, 0, 0, $2)`,
-            [customerId, `LM-${generateOpaqueToken(12)}`],
+            `INSERT INTO loyalty_cards (id, customer_id, stamps, completed_washes, qr_token, qr_token_expires_at)
+             VALUES ($1, $2, 0, 0, $3, NOW() + INTERVAL '24 hours')`,
+            [newUuid(), customerId, `LM-${generateOpaqueToken(18)}`],
           );
 
           await recordAuditLog(tx, {

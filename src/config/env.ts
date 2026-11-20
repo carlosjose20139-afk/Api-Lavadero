@@ -34,6 +34,9 @@ const envSchema = z.object({
   CANCELLATION_PENALTY_COP: z.coerce.number().int().min(0).default(1000),
   CANCELLATION_MIN_HOURS: z.coerce.number().min(0).default(3),
   EXPIRATION_CHECK_INTERVAL_MS: z.coerce.number().int().min(1000).default(30000),
+  LOYALTY_REWARD_VALID_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  LOYALTY_MAX_MANUAL_VALID_DAYS: z.coerce.number().int().min(1).max(365).default(180),
+  LOYALTY_QR_TTL_MINUTES: z.coerce.number().int().min(1).max(10080).default(1440),
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional().default(''),
 });
 

@@ -78,7 +78,7 @@ export function createApp(db: DbClient, options: CreateAppOptions = {}): Express
       origin: env.CORS_ORIGIN_LIST === '*' ? true : env.CORS_ORIGIN_LIST,
       credentials: true,
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Idempotency-Key'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Idempotency-Key', 'Idempotency-Key'],
     }),
   );
 

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import type { DbClient, DbExecutor } from '../../db/index.js';
+import type { DbClient } from '../../db/index.js';
 import { createAuthMiddleware } from '../../middleware/auth.js';
 import {
   idParamSchema,
@@ -15,7 +15,16 @@ import { moderationService } from '../../services/moderation.service.js';
 import { notificationService } from '../../services/notification.service.js';
 import { newUuid } from '../../utils/crypto.js';
 import { AppError, created, ok, paginated } from '../../utils/response.js';
-import { toIsoBogota, toIsoBogotaNullable } from '../../utils/time.js';
+import {
+  createForumReply,
+  detectUnsafeForumHtml,
+  fetchForumPostById,
+  hydrateForumPost,
+  listForumAudits,
+  listForumPosts,
+  softDeleteForumReply,
+  updateForumReply,
+} from './forum.service.js';
 
 const listPostsQuerySchema = paginationQuerySchema.extend({
   includeDeleted: z
@@ -37,68 +46,19 @@ const forumEditSchema = z
   })
   .strict();
 
+// Para respuestas validamos estructura estricta en Zod y delegamos vacío / >5000 / HTML / ofensivo
+// a sanitizeAndValidateForumReplyContent() para emitir consistentemente FORUM_REPLY_INVALID_CONTENT.
+const forumReplyInputSchema = z
+  .object({
+    content: z.string({ message: 'El contenido de la respuesta es obligatorio' }),
+  })
+  .strict();
+
 const forumAuditQuerySchema = paginationQuerySchema.extend({
   actorId: uuidSchema.optional(),
   action: z.enum(['created', 'edited', 'deleted', 'moderated']).optional(),
+  targetType: z.enum(['forum_post', 'forum_reply']).optional(),
 });
-
-interface ForumPostRow {
-  id: string;
-  parent_id: string | null;
-  author_id: string;
-  author_name: string;
-  title: string;
-  content: string;
-  edited_at: Date | string | null;
-  deleted_at: Date | string | null;
-  created_at: Date | string;
-}
-
-async function hydrateForumPost(db: DbExecutor, post: ForumPostRow) {
-  const repliesRes = await db.query<ForumPostRow>(
-    `SELECT p.id, p.parent_id, p.author_id, u.name AS author_name,
-            p.title, p.content, p.edited_at, p.deleted_at, p.created_at
-     FROM forum_posts p
-     INNER JOIN users u ON u.id = p.author_id
-     WHERE p.parent_id = $1 AND p.deleted_at IS NULL
-     ORDER BY p.created_at ASC`,
-    [post.id],
-  );
-
-  return {
-    id: post.id,
-    authorId: post.author_id,
-    authorName: post.author_name,
-    title: post.title,
-    content: post.content,
-    editedAt: toIsoBogotaNullable(post.edited_at),
-    deletedAt: toIsoBogotaNullable(post.deleted_at),
-    replies: repliesRes.rows.map((r) => ({
-      id: r.id,
-      authorId: r.author_id,
-      authorName: r.author_name,
-      content: r.content,
-      editedAt: toIsoBogotaNullable(r.edited_at),
-      deletedAt: toIsoBogotaNullable(r.deleted_at),
-      createdAt: toIsoBogota(r.created_at),
-    })),
-  };
-}
-
-async function fetchForumPostById(
-  db: DbExecutor,
-  id: string,
-): Promise<ForumPostRow | null> {
-  const res = await db.query<ForumPostRow>(
-    `SELECT p.id, p.parent_id, p.author_id, u.name AS author_name,
-            p.title, p.content, p.edited_at, p.deleted_at, p.created_at
-     FROM forum_posts p
-     INNER JOIN users u ON u.id = p.author_id
-     WHERE p.id = $1`,
-    [id],
-  );
-  return res.rows[0] ?? null;
-}
 
 export function createForumRouter(db: DbClient): Router {
   const router = Router();
@@ -111,41 +71,14 @@ export function createForumRouter(db: DbClient): Router {
     validateQuery(listPostsQuerySchema),
     async (req, res, next) => {
       try {
-        const { page, pageSize, includeDeleted } = res.locals.query as z.infer<
-          typeof listPostsQuerySchema
-        >;
-        const showDeleted =
-          includeDeleted && req.user?.role === 'Administrador';
-        const whereSql = showDeleted
-          ? 'WHERE p.parent_id IS NULL'
-          : 'WHERE p.parent_id IS NULL AND p.deleted_at IS NULL';
-
-        const countRes = await db.query<{ cnt: string | number }>(
-          `SELECT COUNT(*) AS cnt FROM forum_posts p ${whereSql}`,
-        );
-        const total = Number(countRes.rows[0]?.cnt ?? 0);
-        const offset = (page - 1) * pageSize;
-
-        const postsRes = await db.query<ForumPostRow>(
-          `SELECT p.id, p.parent_id, p.author_id, u.name AS author_name,
-                  p.title, p.content, p.edited_at, p.deleted_at, p.created_at
-           FROM forum_posts p
-           INNER JOIN users u ON u.id = p.author_id
-           ${whereSql}
-           ORDER BY p.created_at DESC
-           LIMIT $1 OFFSET $2`,
-          [pageSize, offset],
-        );
-
-        const hydrated = await Promise.all(
-          postsRes.rows.map((p) => hydrateForumPost(db, p)),
-        );
+        const query = res.locals.query as z.infer<typeof listPostsQuerySchema>;
+        const { items, total } = await listForumPosts(db, req.user?.role, query);
 
         return paginated(
           res,
-          hydrated,
-          page,
-          pageSize,
+          items,
+          query.page,
+          query.pageSize,
           total,
           'Publicaciones del foro consultadas exitosamente',
         );
@@ -163,6 +96,18 @@ export function createForumRouter(db: DbClient): Router {
       try {
         const actor = req.user!;
         const body = req.body as z.infer<typeof forumInputSchema>;
+
+        if (
+          detectUnsafeForumHtml(body.title ?? '') ||
+          detectUnsafeForumHtml(body.content)
+        ) {
+          throw new AppError(
+            422,
+            'VALIDATION_ERROR',
+            'El contenido contiene HTML o scripts no permitidos',
+            { content: 'No se permite HTML, scripts ni etiquetas peligrosas' },
+          );
+        }
 
         const modCheck = moderationService.checkText(
           `${body.title ?? ''} ${body.content}`,
@@ -186,10 +131,10 @@ export function createForumRouter(db: DbClient): Router {
 
           await tx.query(
             `INSERT INTO forum_audits (
-               id, post_id, actor_id, actor_name, action,
+               id, post_id, target_type, actor_id, actor_name, action,
                previous_content, new_content, ip_address
              )
-             VALUES ($1, $2, $3, $4, 'created', NULL, $5, $6)`,
+             VALUES ($1, $2, 'forum_post', $3, $4, 'created', NULL, $5, $6)`,
             [newUuid(), postId, actor.id, actor.name, body.content, req.clientIp ?? null],
           );
 
@@ -224,6 +169,15 @@ export function createForumRouter(db: DbClient): Router {
         const { id } = res.locals.params as { id: string };
         const { content } = req.body as z.infer<typeof forumEditSchema>;
 
+        if (detectUnsafeForumHtml(content)) {
+          throw new AppError(
+            422,
+            'VALIDATION_ERROR',
+            'El contenido contiene HTML o scripts no permitidos',
+            { content: 'No se permite HTML, scripts ni etiquetas peligrosas' },
+          );
+        }
+
         const modCheck = moderationService.checkText(content);
         if (modCheck.flagged) {
           throw new AppError(
@@ -235,8 +189,8 @@ export function createForumRouter(db: DbClient): Router {
         }
 
         const updatedPost = await db.withTransaction(async (tx) => {
-          const existing = await fetchForumPostById(tx, id);
-          if (!existing) {
+          const existing = await fetchForumPostById(tx, id, true);
+          if (!existing || existing.parent_id !== null) {
             throw new AppError(
               404,
               'FORUM_POST_NOT_FOUND',
@@ -273,10 +227,10 @@ export function createForumRouter(db: DbClient): Router {
 
           await tx.query(
             `INSERT INTO forum_audits (
-               id, post_id, actor_id, actor_name, action,
+               id, post_id, target_type, actor_id, actor_name, action,
                previous_content, new_content, ip_address
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             VALUES ($1, $2, 'forum_post', $3, $4, $5, $6, $7, $8)`,
             [
               newUuid(),
               id,
@@ -310,7 +264,7 @@ export function createForumRouter(db: DbClient): Router {
           });
 
           const row = await fetchForumPostById(tx, id);
-          return hydrateForumPost(tx, row!);
+          return hydrateForumPost(tx, row!, actor.role === 'Administrador');
         });
 
         return ok(res, updatedPost, 'Publicación actualizada exitosamente');
@@ -330,8 +284,8 @@ export function createForumRouter(db: DbClient): Router {
         const { id } = res.locals.params as { id: string };
 
         await db.withTransaction(async (tx) => {
-          const existing = await fetchForumPostById(tx, id);
-          if (!existing) {
+          const existing = await fetchForumPostById(tx, id, true);
+          if (!existing || existing.parent_id !== null) {
             throw new AppError(
               404,
               'FORUM_POST_NOT_FOUND',
@@ -367,10 +321,10 @@ export function createForumRouter(db: DbClient): Router {
 
           await tx.query(
             `INSERT INTO forum_audits (
-               id, post_id, actor_id, actor_name, action,
+               id, post_id, target_type, actor_id, actor_name, action,
                previous_content, new_content, ip_address
              )
-             VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)`,
+             VALUES ($1, $2, 'forum_post', $3, $4, $5, $6, NULL, $7)`,
             [
               newUuid(),
               id,
@@ -414,64 +368,63 @@ export function createForumRouter(db: DbClient): Router {
     '/posts/:id/replies',
     authenticate(),
     validateParams(idParamSchema),
-    validateBody(forumEditSchema),
+    validateBody(forumReplyInputSchema),
     async (req, res, next) => {
       try {
         const actor = req.user!;
         const { id } = res.locals.params as { id: string };
-        const { content } = req.body as z.infer<typeof forumEditSchema>;
-
-        const modCheck = moderationService.checkText(content);
-        if (modCheck.flagged) {
-          throw new AppError(
-            422,
-            'OFFENSIVE_CONTENT',
-            modCheck.reason ?? 'Contenido bloqueado por moderación automática',
-            { content: 'Contiene lenguaje ofensivo' },
-          );
-        }
-
-        const updatedParent = await db.withTransaction(async (tx) => {
-          const parent = await fetchForumPostById(tx, id);
-          if (!parent || parent.deleted_at !== null) {
-            throw new AppError(
-              404,
-              'FORUM_POST_NOT_FOUND',
-              'La publicación a responder no existe o fue eliminada',
-            );
-          }
-
-          const replyId = newUuid();
-          await tx.query(
-            `INSERT INTO forum_posts (id, parent_id, author_id, title, content)
-             VALUES ($1, $2, $3, '', $4)`,
-            [replyId, id, actor.id, content],
-          );
-
-          await tx.query(
-            `INSERT INTO forum_audits (
-               id, post_id, actor_id, actor_name, action,
-               previous_content, new_content, ip_address
-             )
-             VALUES ($1, $2, $3, $4, 'created', NULL, $5, $6)`,
-            [newUuid(), replyId, actor.id, actor.name, content, req.clientIp ?? null],
-          );
-
-          await recordAuditLog(tx, {
-            actorId: actor.id,
-            actorRole: actor.role,
-            action: 'forum_reply_created',
-            entityType: 'forum_post',
-            entityId: replyId,
-            ipAddress: req.clientIp,
-            changes: { parentId: id },
-          });
-
-          const refreshedParent = await fetchForumPostById(tx, id);
-          return hydrateForumPost(tx, refreshedParent!);
-        });
+        const { content } = req.body as z.infer<typeof forumReplyInputSchema>;
+        const updatedParent = await createForumReply(
+          db,
+          actor,
+          id,
+          content,
+          req.clientIp,
+        );
 
         return created(res, updatedParent, 'Respuesta publicada exitosamente');
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.patch(
+    '/replies/:id',
+    authenticate(),
+    validateParams(idParamSchema),
+    validateBody(forumReplyInputSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const { content } = req.body as z.infer<typeof forumReplyInputSchema>;
+        const updated = await updateForumReply(
+          db,
+          actor,
+          id,
+          content,
+          req.clientIp,
+        );
+
+        return ok(res, updated, 'Respuesta actualizada exitosamente');
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.delete(
+    '/replies/:id',
+    authenticate(),
+    validateParams(idParamSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const deleted = await softDeleteForumReply(db, actor, id, req.clientIp);
+
+        return ok(res, deleted, 'Respuesta eliminada exitosamente');
       } catch (err) {
         next(err);
       }
@@ -485,61 +438,14 @@ export function createForumRouter(db: DbClient): Router {
     validateQuery(forumAuditQuerySchema),
     async (_req, res, next) => {
       try {
-        const { page, pageSize, actorId, action } = res.locals.query as z.infer<
-          typeof forumAuditQuerySchema
-        >;
-
-        const conditions: string[] = [];
-        const params: unknown[] = [];
-
-        if (actorId) {
-          params.push(actorId);
-          conditions.push(`actor_id = $${params.length}`);
-        }
-        if (action) {
-          params.push(action);
-          conditions.push(`action = $${params.length}`);
-        }
-
-        const whereSql =
-          conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-        const countRes = await db.query<{ cnt: string | number }>(
-          `SELECT COUNT(*) AS cnt FROM forum_audits ${whereSql}`,
-          params,
-        );
-        const total = Number(countRes.rows[0]?.cnt ?? 0);
-        const offset = (page - 1) * pageSize;
-
-        const rowsRes = await db.query<{
-          id: string;
-          actor_id: string;
-          actor_name: string;
-          action: string;
-          occurred_at: Date | string;
-          previous_content: string | null;
-          new_content: string | null;
-        }>(
-          `SELECT id, actor_id, actor_name, action, occurred_at, previous_content, new_content
-           FROM forum_audits
-           ${whereSql}
-           ORDER BY occurred_at DESC
-           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-          [...params, pageSize, offset],
-        );
+        const query = res.locals.query as z.infer<typeof forumAuditQuerySchema>;
+        const { items, total } = await listForumAudits(db, query);
 
         return paginated(
           res,
-          rowsRes.rows.map((r) => ({
-            id: r.id,
-            actorId: r.actor_id,
-            actorName: r.actor_name,
-            action: r.action,
-            occurredAt: toIsoBogota(r.occurred_at),
-            previousContent: r.previous_content,
-            newContent: r.new_content,
-          })),
-          page,
-          pageSize,
+          items,
+          query.page,
+          query.pageSize,
           total,
           'Historial de auditoría del foro consultado exitosamente',
         );

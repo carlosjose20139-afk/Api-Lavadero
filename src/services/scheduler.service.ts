@@ -1,6 +1,7 @@
 import type { DbClient } from '../db/index.js';
 import { logger } from '../config/logger.js';
 import { newUuid } from '../utils/crypto.js';
+import { toIsoBogota } from '../utils/time.js';
 import { notificationService } from './notification.service.js';
 
 export async function expirePendingWashRequests(
@@ -69,18 +70,139 @@ export async function expirePendingWashRequests(
   });
 }
 
+export interface LoyaltyExpireOptions {
+  actorId?: string | null;
+  actorRole?: string | null;
+  actorName?: string | null;
+  ipAddress?: string | null;
+  reason?: string | null;
+}
+
+export async function expireOutdatedLoyaltyRewardsDetailed(
+  db: DbClient,
+  referenceNow: Date = new Date(),
+  options: LoyaltyExpireOptions = {},
+): Promise<{ expiredCount: number; expiredRewardIds: string[] }> {
+  return db.withTransaction(async (tx) => {
+    const expiredRes = await tx.query<{
+      id: string;
+      customer_id: string;
+      title: string;
+      valid_from: Date | string;
+      valid_until: Date | string;
+    }>(
+      `SELECT id, customer_id, title, valid_from, valid_until
+       FROM loyalty_rewards
+       WHERE status = 'available' AND valid_until < $1
+       FOR UPDATE SKIP LOCKED`,
+      [referenceNow],
+    );
+
+    if (expiredRes.rows.length === 0) {
+      return { expiredCount: 0, expiredRewardIds: [] };
+    }
+
+    const actorId = options.actorId ?? null;
+    const actorRole = options.actorRole ?? 'Sistema';
+    const actorName = options.actorName ?? 'Sistema';
+    const reason = options.reason ?? 'Recompensa expirada automáticamente al vencer validUntil';
+    const nowIso = toIsoBogota(new Date());
+    const expiredRewardIds: string[] = [];
+
+    for (const reward of expiredRes.rows) {
+      expiredRewardIds.push(reward.id);
+
+      await tx.query(
+        `UPDATE loyalty_rewards
+         SET status = 'expired', updated_at = NOW()
+         WHERE id = $1 AND status = 'available'`,
+        [reward.id],
+      );
+
+      const beforeState = {
+        status: 'available',
+        validFrom: toIsoBogota(reward.valid_from),
+        validUntil: toIsoBogota(reward.valid_until),
+      };
+      const afterState = {
+        status: 'expired',
+        validFrom: toIsoBogota(reward.valid_from),
+        validUntil: toIsoBogota(reward.valid_until),
+      };
+
+      await tx.query(
+        `INSERT INTO loyalty_audits (
+           id, customer_id, actor_id, actor_role, actor_name, action,
+           target_id, target_type, before_state, after_state, reason, ip_address
+         )
+         VALUES ($1, $2, $3, $4, $5, 'loyalty_reward_expired', $6, 'loyalty_reward', $7::jsonb, $8::jsonb, $9, $10)`,
+        [
+          newUuid(),
+          reward.customer_id,
+          actorId,
+          actorRole,
+          actorName,
+          reward.id,
+          JSON.stringify(beforeState),
+          JSON.stringify(afterState),
+          reason,
+          options.ipAddress ?? null,
+        ],
+      );
+
+      await tx.query(
+        `INSERT INTO audit_logs (id, actor_id, actor_role, action, entity_type, entity_id, ip_address, changes)
+         VALUES ($1, $2, $3, 'loyalty_reward_expired', 'loyalty_reward', $4, $5, $6::jsonb)`,
+        [
+          newUuid(),
+          actorId,
+          actorRole,
+          reward.id,
+          options.ipAddress ?? null,
+          JSON.stringify({
+            actorId,
+            actorRole,
+            customerId: reward.customer_id,
+            targetId: reward.id,
+            targetType: 'loyalty_reward',
+            before: beforeState,
+            after: afterState,
+            reason,
+            createdAt: nowIso,
+          }),
+        ],
+      );
+
+      await notificationService.createAndNotifyUser(tx, {
+        userId: reward.customer_id,
+        title: 'Tu recompensa de fidelización venció',
+        body: `El premio "${reward.title}" expiró al finalizar su vigencia.`,
+        type: 'loyalty_reward_expired',
+        deepLink: '/loyalty/rewards',
+        payload: {
+          rewardId: reward.id,
+          customerId: reward.customer_id,
+          validUntil: toIsoBogota(reward.valid_until),
+        },
+      });
+    }
+
+    return {
+      expiredCount: expiredRewardIds.length,
+      expiredRewardIds,
+    };
+  });
+}
+
 export async function expireOutdatedLoyaltyRewards(
   db: DbClient,
   referenceNow: Date = new Date(),
 ): Promise<number> {
-  const res = await db.query<{ id: string }>(
-    `UPDATE loyalty_rewards
-     SET status = 'expired'
-     WHERE status = 'available' AND valid_until < $1
-     RETURNING id`,
-    [referenceNow],
+  const { expiredCount } = await expireOutdatedLoyaltyRewardsDetailed(
+    db,
+    referenceNow,
   );
-  return res.rowCount;
+  return expiredCount;
 }
 
 export function startBackgroundScheduler(
