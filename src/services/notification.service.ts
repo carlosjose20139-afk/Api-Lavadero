@@ -24,6 +24,7 @@ export type NotificationType =
   | 'loyalty_reward_redeemed'
   | 'loyalty_reward_cancelled'
   | 'loyalty_reward_expired'
+  | 'loyalty_settings_updated'
   | 'pending_charge'
   | 'moderation'
   | 'data_request';

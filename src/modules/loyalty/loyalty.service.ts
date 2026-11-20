@@ -7,6 +7,10 @@ import { expireOutdatedLoyaltyRewards } from '../../services/scheduler.service.j
 import { generateOpaqueToken, newUuid } from '../../utils/crypto.js';
 import { AppError } from '../../utils/response.js';
 import { toIsoBogota, toIsoBogotaNullable } from '../../utils/time.js';
+import {
+  assertLoyaltyEnabled,
+  isLoyaltyEnabled,
+} from '../settings/settings.service.js';
 
 export type RewardStatus = 'available' | 'redeemed' | 'expired' | 'cancelled';
 export type RewardSource = 'automatic' | 'manual';
@@ -59,6 +63,7 @@ export interface LoyaltyStampDto {
 export interface LoyaltyCardDto {
   id: string;
   customerId: string;
+  loyaltyEnabled: boolean;
   stamps: number;
   completedWashes: number;
   qrToken: string;
@@ -72,6 +77,7 @@ export interface LoyaltyCustomerSummaryDto {
   customerName: string;
   username: string;
   isActive: boolean;
+  loyaltyEnabled: boolean;
   stamps: number;
   completedWashes: number;
   availableRewards: number;
@@ -433,9 +439,12 @@ export async function getOrCreateLoyaltyCard(
     rewardParams,
   );
 
+  const loyaltyEnabled = await isLoyaltyEnabled(db);
+
   return {
     id: card.id,
     customerId: card.customer_id,
+    loyaltyEnabled,
     stamps: Number(card.stamps),
     completedWashes: Number(card.completed_washes),
     qrToken: card.qr_token,
@@ -486,6 +495,7 @@ export async function grantLoyaltyStampTx(
   message: string;
 }> {
   const { actor, washRequestId, expectedCustomerId, ipAddress } = params;
+  await assertLoyaltyEnabled(tx);
   const cleanReason =
     params.reason !== undefined
       ? sanitizeAndAssertSafeLoyaltyText(params.reason, 'reason', 500, false)
@@ -744,6 +754,7 @@ export async function reverseLoyaltyStamp(
   const finalReason = cleanReason ?? 'Sello revertido por administración';
 
   return db.withTransaction(async (tx) => {
+    await assertLoyaltyEnabled(tx);
     await assertCustomerExists(tx, customerId);
 
     const stampRes = await tx.query<LoyaltyStampRow>(
@@ -982,6 +993,7 @@ export async function assignManualLoyaltyReward(
   }
 
   return db.withTransaction(async (tx) => {
+    await assertLoyaltyEnabled(tx);
     await assertCustomerExists(tx, params.customerId);
     await getOrCreateLoyaltyCard(tx, params.customerId);
 
@@ -1063,10 +1075,12 @@ export async function cancelLoyaltyReward(
       : null;
   const finalReason = cleanReason ?? 'Recompensa cancelada por administración';
 
+  await assertLoyaltyEnabled(db);
   // Expiramos primero recompensas vencidas para no cancelar incorrectamente una ya vencida
   await expireOutdatedLoyaltyRewards(db);
 
   return db.withTransaction(async (tx) => {
+    await assertLoyaltyEnabled(tx);
     const res = await tx.query<LoyaltyRewardRow>(
       `SELECT id, customer_id, title, valid_from, valid_until, status, source,
               source_stamp_id, appointment_id, redeemed_appointment_id, reason,
@@ -1165,6 +1179,7 @@ export async function redeemLoyaltyRewardTx(
   },
 ): Promise<LoyaltyCardDto> {
   const { actor, rewardId, appointmentId, ipAddress } = params;
+  await assertLoyaltyEnabled(tx);
 
   const rewardRes = await tx.query<LoyaltyRewardRow>(
     `SELECT id, customer_id, title, valid_from, valid_until, status, source,
@@ -1333,7 +1348,10 @@ export async function listLoyaltyCustomers(
     pageSize: number;
   },
 ): Promise<{ items: LoyaltyCustomerSummaryDto[]; total: number }> {
-  await expireOutdatedLoyaltyRewards(db);
+  const loyaltyEnabled = await isLoyaltyEnabled(db);
+  if (loyaltyEnabled) {
+    await expireOutdatedLoyaltyRewards(db);
+  }
 
   const conditions: string[] = [`u.role = 'Cliente'`];
   const params: unknown[] = [];
@@ -1412,6 +1430,7 @@ export async function listLoyaltyCustomers(
       customerName: r.customer_name,
       username: r.username,
       isActive: r.is_active,
+      loyaltyEnabled,
       stamps: Number(r.stamps ?? 0),
       completedWashes: Number(r.completed_washes ?? 0),
       availableRewards: Number(r.available_rewards ?? 0),
@@ -1453,10 +1472,14 @@ export async function getLoyaltyCustomerDetail(
     cancelled: LoyaltyRewardDto[];
   };
   audit: LoyaltyAuditDto[];
+  loyaltyEnabled: boolean;
   updatedAt: string;
 }> {
   const customer = await assertCustomerExists(db, customerId);
-  await expireOutdatedLoyaltyRewards(db);
+  const loyaltyEnabled = await isLoyaltyEnabled(db);
+  if (loyaltyEnabled) {
+    await expireOutdatedLoyaltyRewards(db);
+  }
   const card = await getOrCreateLoyaltyCard(db, customerId);
 
   const stampsRes = await db.query<LoyaltyStampRow>(
@@ -1562,6 +1585,7 @@ export async function getLoyaltyCustomerDetail(
       ipAddress: a.ip_address,
       createdAt: toIsoBogota(a.created_at),
     })),
+    loyaltyEnabled,
     updatedAt: card.updatedAt,
   };
 }

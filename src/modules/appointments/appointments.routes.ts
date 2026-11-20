@@ -17,6 +17,10 @@ import {
 import { recordAuditLog } from '../../services/audit.service.js';
 import { notificationService } from '../../services/notification.service.js';
 import { expireOutdatedLoyaltyRewards } from '../../services/scheduler.service.js';
+import {
+  assertLoyaltyEnabled,
+  isLoyaltyEnabled,
+} from '../settings/settings.service.js';
 import { newUuid } from '../../utils/crypto.js';
 import { AppError, created, ok, paginated } from '../../utils/response.js';
 import {
@@ -585,7 +589,9 @@ export function createAppointmentsRouter(db: DbClient): Router {
           );
         }
 
-        await expireOutdatedLoyaltyRewards(db);
+        if (await isLoyaltyEnabled(db)) {
+          await expireOutdatedLoyaltyRewards(db);
+        }
 
         const appointmentId = newUuid();
         const createdAppt = await db.withTransaction(async (tx) => {
@@ -645,6 +651,7 @@ export function createAppointmentsRouter(db: DbClient): Router {
 
           let rewardId: string | null = null;
           if (body.isLoyaltyRedemption) {
+            await assertLoyaltyEnabled(tx);
             const rewardRes = await tx.query<{ id: string }>(
               `SELECT id
                FROM loyalty_rewards
@@ -880,7 +887,9 @@ export function createAppointmentsRouter(db: DbClient): Router {
           typeof rescheduleAppointmentSchema
         >;
 
-        await expireOutdatedLoyaltyRewards(db);
+        if (await isLoyaltyEnabled(db)) {
+          await expireOutdatedLoyaltyRewards(db);
+        }
 
         const updated = await db.withTransaction(async (tx) => {
           await tx.query(`SELECT id FROM shop_settings WHERE id = 1 FOR UPDATE`);

@@ -12,8 +12,8 @@ Backend productivo en **Node.js 22 + TypeScript + Express + PostgreSQL** para el
 
 ### Estructura modular
 
-- `migrations/`: migraciones SQL idempotentes (`001_initial_schema.sql`, `002_seed_shop_defaults.sql`, `003_motorcycle_decoupling.sql`, `004_promotions_lifecycle.sql`, `005_forum_replies_audit.sql`, `006_loyalty_lifecycle.sql`).
-- `src/modules/`: routers por dominio (`auth`, `customers`, `motorcycles`, `services`, `appointments`, `washRequests`, `notifications`, `loyalty`, `finance`, `inventory`, `employees`, `promotions`, `reviews`, `forum`, `reports`, `legal`).
+- `migrations/`: migraciones SQL idempotentes (`001_initial_schema.sql`, `002_seed_shop_defaults.sql`, `003_motorcycle_decoupling.sql`, `004_promotions_lifecycle.sql`, `005_forum_replies_audit.sql`, `006_loyalty_lifecycle.sql`, `007_loyalty_settings.sql`).
+- `src/modules/`: routers por dominio (`auth`, `customers`, `motorcycles`, `services`, `appointments`, `washRequests`, `notifications`, `loyalty`, `settings`, `finance`, `inventory`, `employees`, `promotions`, `reviews`, `forum`, `reports`, `legal`).
 - `src/services/`: auditoría (`audit.service.ts`), notificaciones in-app + FCM (`notification.service.ts`), moderación (`moderation.service.ts`) y proceso programado de vencimientos (`scheduler.service.ts`).
 - `docs/api/openapi.yaml`: contrato OpenAPI 3.0.3 servido en `/api/docs`, `/api/v1/openapi.yaml` y `/api/v1/openapi.json`.
 

@@ -27,6 +27,7 @@ tags:
   - name: Reseñas
   - name: Foro
   - name: Reportes
+  - name: Configuración
 security:
   - bearerAuth: []
 paths:
@@ -773,12 +774,13 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
   /loyalty/expire:
     post:
       tags: [Fidelización]
       summary: Expirar recompensas cuya vigencia ha terminado
-      description: Solo Administrador. Operación idempotente que cambia recompensas available vencidas a expired, audita y notifica a los clientes afectados.
+      description: Solo Administrador. Operación idempotente que cambia recompensas available vencidas a expired, audita y notifica a los clientes afectados. Devuelve 409 LOYALTY_DISABLED si la campaña está desactivada.
       security: [{ bearerAuth: [] }]
       responses:
         '200':
@@ -792,6 +794,7 @@ paths:
                     properties: { data: { $ref: '#/components/schemas/LoyaltyExpireResult' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /payments:
     post:
       tags: [Finanzas]
@@ -1419,6 +1422,58 @@ paths:
           description: Archivo
           content:
             application/octet-stream: { schema: { type: string, format: binary } }
+  /settings/public:
+    get:
+      tags: [Configuración]
+      security: []
+      summary: Consultar configuración pública de la aplicación
+      description: Endpoint público sin autenticación. Devuelve únicamente banderas públicas seguras como loyaltyEnabled, sin exponer secretos ni configuración interna.
+      responses:
+        '200':
+          description: Configuración pública consultada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltySettingsPublic' } }
+              example:
+                data:
+                  loyaltyEnabled: true
+                message: Configuración pública consultada exitosamente
+  /settings/loyalty:
+    patch:
+      tags: [Configuración]
+      security: [{ bearerAuth: [] }]
+      summary: Activar o desactivar globalmente el módulo de Fidelización 7+1 (solo Administrador)
+      description: Requiere Bearer JWT con rol Administrador (Cliente y Lavador reciben 403). Cuando loyaltyEnabled es false, todas las operaciones mutantes de Fidelización responden 409 LOYALTY_DISABLED sin eliminar historial ni premios existentes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoyaltySettingsUpdate' }
+            example:
+              loyaltyEnabled: false
+      responses:
+        '200':
+          description: Configuración de Fidelización actualizada exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/LoyaltySettingsUpdated' } }
+              example:
+                data:
+                  loyaltyEnabled: false
+                  updatedAt: '2026-11-20T12:00:00.000-05:00'
+                  updatedBy: a1b2c3d4-0000-4000-8000-000000000001
+                message: Configuración de Fidelización actualizada exitosamente
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 components:
   securitySchemes:
     bearerAuth:
@@ -2012,6 +2067,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         customerId: { type: string, format: uuid }
+        loyaltyEnabled: { type: boolean }
         stamps: { type: integer, minimum: 0, maximum: 7 }
         completedWashes: { type: integer, minimum: 0 }
         qrToken: { type: string }
@@ -2027,6 +2083,7 @@ components:
         customerName: { type: string }
         username: { type: string }
         isActive: { type: boolean }
+        loyaltyEnabled: { type: boolean }
         stamps: { type: integer, minimum: 0, maximum: 7 }
         completedWashes: { type: integer, minimum: 0 }
         availableRewards: { type: integer, minimum: 0 }
@@ -2079,6 +2136,7 @@ components:
         audit:
           type: array
           items: { $ref: '#/components/schemas/LoyaltyAuditEvent' }
+        loyaltyEnabled: { type: boolean }
         updatedAt: { type: string, format: date-time }
     LoyaltyCustomerStampInput:
       type: object
@@ -2107,6 +2165,24 @@ components:
         expiredCount: { type: integer }
         expiredRewardIds: { type: array, items: { type: string, format: uuid } }
         executedAt: { type: string, format: date-time }
+    LoyaltySettingsPublic:
+      type: object
+      required: [loyaltyEnabled]
+      properties:
+        loyaltyEnabled: { type: boolean, example: true }
+    LoyaltySettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [loyaltyEnabled]
+      properties:
+        loyaltyEnabled: { type: boolean, example: false }
+    LoyaltySettingsUpdated:
+      type: object
+      required: [loyaltyEnabled, updatedAt, updatedBy]
+      properties:
+        loyaltyEnabled: { type: boolean, example: false }
+        updatedAt: { type: string, format: date-time, example: '2026-11-20T12:00:00.000-05:00' }
+        updatedBy: { type: string, format: uuid }
     ForumInput:
       type: object
       additionalProperties: false

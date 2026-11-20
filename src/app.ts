@@ -32,6 +32,7 @@ import { createPromotionsRouter } from './modules/promotions/promotions.routes.j
 import { createReportsRouter } from './modules/reports/reports.routes.js';
 import { createReviewsRouter } from './modules/reviews/reviews.routes.js';
 import { createServicesRouter } from './modules/services/services.routes.js';
+import { createSettingsRouter } from './modules/settings/settings.routes.js';
 import { createWashRequestsRouter } from './modules/washRequests/washRequests.routes.js';
 import { ok } from './utils/response.js';
 import { toIsoBogota } from './utils/time.js';
@@ -210,6 +211,7 @@ export function createApp(db: DbClient, options: CreateAppOptions = {}): Express
   apiV1.use('/reviews', createReviewsRouter(db));
   apiV1.use('/forum', createForumRouter(db));
   apiV1.use('/reports', createReportsRouter(db));
+  apiV1.use('/settings', createSettingsRouter(db));
   apiV1.use('/legal', createLegalRouter(db));
 
   app.use('/api/v1', apiV1);

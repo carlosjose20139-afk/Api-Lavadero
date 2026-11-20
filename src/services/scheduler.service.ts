@@ -3,6 +3,7 @@ import { logger } from '../config/logger.js';
 import { newUuid } from '../utils/crypto.js';
 import { toIsoBogota } from '../utils/time.js';
 import { notificationService } from './notification.service.js';
+import { isLoyaltyEnabled } from '../modules/settings/settings.service.js';
 
 export async function expirePendingWashRequests(
   db: DbClient,
@@ -216,7 +217,10 @@ export function startBackgroundScheduler(
     running = true;
     try {
       const expiredWashes = await expirePendingWashRequests(db);
-      const expiredRewards = await expireOutdatedLoyaltyRewards(db);
+      const loyaltyActive = await isLoyaltyEnabled(db);
+      const expiredRewards = loyaltyActive
+        ? await expireOutdatedLoyaltyRewards(db)
+        : 0;
       if (expiredWashes > 0 || expiredRewards > 0) {
         logger.info(
           { expiredWashes, expiredRewards },

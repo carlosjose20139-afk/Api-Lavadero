@@ -18,6 +18,10 @@ import { expireOutdatedLoyaltyRewards, expireOutdatedLoyaltyRewardsDetailed } fr
 import { AppError, ok, paginated } from '../../utils/response.js';
 import { toIsoBogota } from '../../utils/time.js';
 import {
+  assertLoyaltyEnabled,
+  isLoyaltyEnabled,
+} from '../settings/settings.service.js';
+import {
   assignManualLoyaltyReward,
   cancelLoyaltyReward,
   getLoyaltyCustomerDetail,
@@ -96,7 +100,9 @@ export function createLoyaltyRouter(db: DbClient): Router {
   router.get('/me', authenticate(), async (req, res, next) => {
     try {
       const actor = req.user!;
-      await expireOutdatedLoyaltyRewards(db);
+      if (await isLoyaltyEnabled(db)) {
+        await expireOutdatedLoyaltyRewards(db);
+      }
       const card = await getOrCreateLoyaltyCard(db, actor.id);
       return ok(
         res,
@@ -119,6 +125,8 @@ export function createLoyaltyRouter(db: DbClient): Router {
         const actor = req.user!;
         const { washRequestId } = req.body as z.infer<typeof stampSchema>;
         const idempotencyKey = res.locals.idempotencyKey as string;
+
+        await assertLoyaltyEnabled(db);
 
         const out = await runIdempotent(
           db,
@@ -165,7 +173,9 @@ export function createLoyaltyRouter(db: DbClient): Router {
           typeof rewardsQuerySchema
         >;
 
-        await expireOutdatedLoyaltyRewards(db);
+        if (await isLoyaltyEnabled(db)) {
+          await expireOutdatedLoyaltyRewards(db);
+        }
 
         if (actor.role === 'Cliente') {
           if (customerId && customerId !== actor.id) {
@@ -249,6 +259,8 @@ export function createLoyaltyRouter(db: DbClient): Router {
         const { id } = res.locals.params as { id: string };
         const body = (req.body ?? {}) as { reason?: string };
 
+        await assertLoyaltyEnabled(db);
+
         const cancelled = await cancelLoyaltyReward(db, {
           actor,
           rewardId: id,
@@ -276,6 +288,7 @@ export function createLoyaltyRouter(db: DbClient): Router {
         const body = (req.body ?? {}) as { appointmentId?: string | null };
         const idempotencyKey = res.locals.idempotencyKey as string;
 
+        await assertLoyaltyEnabled(db);
         await expireOutdatedLoyaltyRewards(db);
 
         const out = await runIdempotent(
@@ -367,6 +380,8 @@ export function createLoyaltyRouter(db: DbClient): Router {
         const body = req.body as z.infer<typeof customerStampSchema>;
         const idempotencyKey = res.locals.idempotencyKey as string;
 
+        await assertLoyaltyEnabled(db);
+
         const out = await runIdempotent(
           db,
           {
@@ -418,6 +433,8 @@ export function createLoyaltyRouter(db: DbClient): Router {
         };
         const body = (req.body ?? {}) as { reason?: string };
 
+        await assertLoyaltyEnabled(db);
+
         const result = await reverseLoyaltyStamp(db, {
           actor,
           customerId,
@@ -444,6 +461,8 @@ export function createLoyaltyRouter(db: DbClient): Router {
         const actor = req.user!;
         const { customerId } = res.locals.params as { customerId: string };
         const body = req.body as z.infer<typeof manualRewardSchema>;
+
+        await assertLoyaltyEnabled(db);
 
         const reward = await assignManualLoyaltyReward(db, {
           actor,
@@ -472,6 +491,7 @@ export function createLoyaltyRouter(db: DbClient): Router {
     async (req, res, next) => {
       try {
         const actor = req.user!;
+        await assertLoyaltyEnabled(db);
         const result = await expireOutdatedLoyaltyRewardsDetailed(
           db,
           new Date(),
