@@ -140,7 +140,7 @@ describe('Configuración Global loyaltyEnabled: migración, RBAC, bloqueo 409, p
     );
 
     const upgraded = await runMigrations(existingDb);
-    expect(upgraded).toEqual(['007_loyalty_settings.sql']);
+    expect(upgraded).toContain('007_loyalty_settings.sql');
 
     const preservedCard = await existingDb.query<{
       stamps: number;

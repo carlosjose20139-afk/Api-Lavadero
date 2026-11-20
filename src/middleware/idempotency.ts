@@ -88,6 +88,12 @@ export async function runIdempotent<T>(
 
   return db.withTransaction(async (tx) => {
     if (key) {
+      // Serializa solicitudes simultáneas con la misma clave de idempotencia sin condiciones de carrera
+      await tx.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+        [`${actorId}:${method}:${path}`, key],
+      );
+
       const existing = await tx.query<{
         request_hash: string;
         status_code: number;

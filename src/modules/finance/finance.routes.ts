@@ -7,6 +7,7 @@ import {
   validateIdempotencyHeader,
 } from '../../middleware/idempotency.js';
 import {
+  isoDateSchema,
   isoDateTimeSchema,
   paginationQuerySchema,
   uuidSchema,
@@ -15,18 +16,43 @@ import {
 } from '../../middleware/validate.js';
 import { recordAuditLog } from '../../services/audit.service.js';
 import { newUuid } from '../../utils/crypto.js';
-import { AppError, created, paginated } from '../../utils/response.js';
+import { created, paginated } from '../../utils/response.js';
 import { toIsoBogota } from '../../utils/time.js';
+import {
+  listManualPayments,
+  paymentMethodSchema,
+  recordManualPaymentTx,
+} from './payments.service.js';
 
-// Solo métodos manuales: Efectivo, Nequi, Daviplata. Sin pasarelas ni tarjetas.
 const paymentInputSchema = z
   .object({
     washRequestId: uuidSchema,
-    method: z.enum(['Efectivo', 'Nequi', 'Daviplata']),
-    amount: z.coerce.number().int().min(0, 'El monto en COP debe ser >= 0'),
-    reference: z.string().trim().max(120).nullable().optional(),
+    method: paymentMethodSchema,
+    amount: z
+      .number({ message: 'El monto en COP debe ser un número entero mayor que cero' })
+      .int('El monto en COP debe ser un número entero')
+      .min(1, 'El monto en COP debe ser mayor que cero'),
+    reference: z
+      .string({ message: 'La referencia debe ser una cadena de texto' })
+      .trim()
+      .max(120, 'La referencia no puede superar 120 caracteres')
+      .nullable()
+      .optional(),
   })
   .strict();
+
+const dateOrDateTimeFilterSchema = z.union([isoDateSchema, isoDateTimeSchema]);
+
+const listPaymentsQuerySchema = paginationQuerySchema.extend({
+  date: isoDateSchema.optional(),
+  from: dateOrDateTimeFilterSchema.optional(),
+  to: dateOrDateTimeFilterSchema.optional(),
+  method: paymentMethodSchema.optional(),
+  recordedBy: uuidSchema.optional(),
+  userId: uuidSchema.optional(),
+  customerId: uuidSchema.optional(),
+  washRequestId: uuidSchema.optional(),
+});
 
 const expenseInputSchema = z
   .object({
@@ -50,17 +76,42 @@ export function createPaymentsRouter(db: DbClient): Router {
   const router = Router();
   const { authenticate, requireRoles } = createAuthMiddleware(db);
 
+  router.get(
+    '/',
+    authenticate(),
+    validateQuery(listPaymentsQuerySchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const query = res.locals.query as z.infer<typeof listPaymentsQuerySchema>;
+
+        const { items, total } = await listManualPayments(db, actor, query);
+
+        return paginated(
+          res,
+          items,
+          query.page,
+          query.pageSize,
+          total,
+          'Pagos consultados exitosamente',
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   router.post(
     '/',
     authenticate(),
     requireRoles('Administrador', 'Lavador'),
-    validateIdempotencyHeader(true),
+    validateIdempotencyHeader(false),
     validateBody(paymentInputSchema),
     async (req, res, next) => {
       try {
         const actor = req.user!;
         const body = req.body as z.infer<typeof paymentInputSchema>;
-        const idempotencyKey = res.locals.idempotencyKey as string;
+        const idempotencyKey = res.locals.idempotencyKey as string | undefined;
 
         const out = await runIdempotent(
           db,
@@ -73,164 +124,16 @@ export function createPaymentsRouter(db: DbClient): Router {
             successStatus: 201,
           },
           async (tx) => {
-            const wrRes = await tx.query<{
-              id: string;
-              customer_id: string;
-              appointment_id: string | null;
-              employee_id: string | null;
-              price: number;
-              applied_pending_balance: number;
-              status: string;
-            }>(
-              `SELECT id, customer_id, appointment_id, employee_id, price,
-                      applied_pending_balance, status
-               FROM wash_requests WHERE id = $1 FOR UPDATE`,
-              [body.washRequestId],
-            );
-            const wr = wrRes.rows[0];
-            if (!wr) {
-              throw new AppError(
-                404,
-                'WASH_REQUEST_NOT_FOUND',
-                'Solicitud de lavada no encontrada',
-              );
-            }
-
-            const payableStates = ['confirmed', 'washing', 'drying', 'ready'];
-            if (!payableStates.includes(wr.status)) {
-              throw new AppError(
-                409,
-                'WASH_NOT_PAYABLE',
-                `La lavada en estado '${wr.status}' no admite registro de pago`,
-              );
-            }
-
-            if (body.amount !== Number(wr.price)) {
-              throw new AppError(
-                422,
-                'PAYMENT_AMOUNT_MISMATCH',
-                `El monto en COP (${body.amount}) debe coincidir con el saldo de la lavada (COP ${wr.price})`,
-                { amount: `Debe ser exactamente ${wr.price}` },
-              );
-            }
-
-            let commission = 0;
-            if (wr.employee_id) {
-              const empRes = await tx.query<{ commission_percent: string | number }>(
-                `SELECT commission_percent FROM employees WHERE id = $1`,
-                [wr.employee_id],
-              );
-              if (empRes.rows[0]) {
-                const pct = Number(empRes.rows[0].commission_percent);
-                commission = Math.round((body.amount * pct) / 100);
-              }
-            }
-
-            const paymentId = newUuid();
-            const payIns = await tx.query<{
-              id: string;
-              wash_request_id: string;
-              method: string;
-              amount: number;
-              reference: string | null;
-              employee_commission: number;
-              paid_at: Date | string;
-            }>(
-              `INSERT INTO payments (
-                 id, wash_request_id, method, amount, reference, employee_commission, recorded_by
-               )
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               RETURNING id, wash_request_id, method, amount, reference, employee_commission, paid_at`,
-              [
-                paymentId,
-                body.washRequestId,
-                body.method,
-                body.amount,
-                body.reference ?? null,
-                commission,
-                actor.id,
-              ],
-            );
-
-            await tx.query(
-              `UPDATE wash_requests
-               SET status = 'paid', completed_at = NOW(), updated_at = NOW()
-               WHERE id = $1`,
-              [body.washRequestId],
-            );
-
-            if (wr.appointment_id) {
-              await tx.query(
-                `UPDATE appointments SET status = 'completed', updated_at = NOW() WHERE id = $1`,
-                [wr.appointment_id],
-              );
-            }
-
-            await tx.query(
-              `INSERT INTO incomes (id, source, wash_request_id, customer_id, amount, status, notes, occurred_at)
-               VALUES ($1, 'wash', $2, $3, $4, 'confirmed', $5, NOW())`,
-              [
-                newUuid(),
-                body.washRequestId,
-                wr.customer_id,
-                body.amount,
-                `Pago manual por ${body.method}`,
-              ],
-            );
-
-            if (Number(wr.applied_pending_balance) > 0) {
-              await tx.query(
-                `UPDATE incomes
-                 SET status = 'settled'
-                 WHERE customer_id = $1 AND source = 'cancellation_fee' AND status = 'pending'`,
-                [wr.customer_id],
-              );
-            }
-
-            await tx.query(
-              `INSERT INTO wash_request_audits (
-                 id, wash_request_id, actor_id, actor_name, action,
-                 previous_content, new_content, ip_address
-               )
-               VALUES ($1, $2, $3, $4, 'paid', $5, $6, $7)`,
-              [
-                newUuid(),
-                body.washRequestId,
-                actor.id,
-                actor.name,
-                wr.status,
-                `paid (${body.method} COP ${body.amount})`,
-                req.clientIp ?? null,
-              ],
-            );
-
-            await recordAuditLog(tx, {
-              actorId: actor.id,
-              actorRole: actor.role,
-              action: 'manual_payment_recorded',
-              entityType: 'payment',
-              entityId: paymentId,
+            const result = await recordManualPaymentTx(tx, {
+              actor,
+              washRequestId: body.washRequestId,
+              method: body.method,
+              amount: body.amount,
+              reference: body.reference,
               ipAddress: req.clientIp,
-              changes: {
-                washRequestId: body.washRequestId,
-                method: body.method,
-                amount: body.amount,
-              },
+              mode: 'payment',
             });
-
-            const p = payIns.rows[0]!;
-            return {
-              data: {
-                id: p.id,
-                washRequestId: p.wash_request_id,
-                method: p.method,
-                amount: Number(p.amount),
-                reference: p.reference,
-                paidAt: toIsoBogota(p.paid_at),
-                employeeCommission: Number(p.employee_commission),
-              },
-              message: `Pago manual (${body.method}) registrado exitosamente`,
-            };
+            return { data: result.data, message: result.message };
           },
         );
 
@@ -392,11 +295,15 @@ export function createIncomesRouter(db: DbClient): Router {
           id: string;
           source: string;
           wash_request_id: string | null;
+          payment_id: string | null;
           customer_id: string | null;
           amount: number;
+          status: string;
+          notes: string | null;
+          recorded_by: string | null;
           occurred_at: Date | string;
         }>(
-          `SELECT id, source, wash_request_id, customer_id, amount, occurred_at
+          `SELECT id, source, wash_request_id, payment_id, customer_id, amount, status, notes, recorded_by, occurred_at
            FROM incomes
            ORDER BY occurred_at DESC
            LIMIT $1 OFFSET $2`,
@@ -409,8 +316,12 @@ export function createIncomesRouter(db: DbClient): Router {
             id: r.id,
             source: r.source,
             washRequestId: r.wash_request_id,
+            paymentId: r.payment_id,
             customerId: r.customer_id,
             amount: Number(r.amount),
+            status: r.status,
+            notes: r.notes,
+            recordedBy: r.recorded_by,
             occurredAt: toIsoBogota(r.occurred_at),
           })),
           page,

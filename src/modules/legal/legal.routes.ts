@@ -47,7 +47,7 @@ export function createLegalRouter(db: DbClient): Router {
           'Gestión de citas y lavadas presenciales en el establecimiento',
           'Confirmación operativa de solicitudes y notificaciones de estado',
           'Administración del programa de fidelización 7+1',
-          'Soporte contable manual de pagos en Efectivo, Nequi o Daviplata',
+          'Soporte contable manual de pagos en Efectivo, Nequi, Daviplata o Bre-B',
         ],
         rights: [
           'Conocer, actualizar y rectificar sus datos frente al administrador',

@@ -457,6 +457,114 @@ paths:
                 afterPhotoUrl: { type: string, format: uri, nullable: true }
       responses:
         '200': { $ref: '#/components/responses/WashRequest' }
+  /wash-requests/{id}/complete:
+    post:
+      tags: [Lavadas, Finanzas]
+      security: [{ bearerAuth: [] }]
+      summary: Completar lavada con pago manual obligatorio
+      description: |
+        Solo Administrador o Lavador autorizado. Cliente recibe 403.
+        Ejecuta en una única transacción con bloqueo de fila (`FOR UPDATE`):
+        1. Valida que la lavada exista y esté en un estado operativo completable (`confirmed`, `washing`, `drying` o `ready`).
+        2. Rechaza lavadas canceladas, rechazadas, vencidas, pendientes de confirmación o ya pagadas (`409`).
+        3. Valida el método manual (`Efectivo`, `Nequi`, `Daviplata` o `Bre-B`), monto entero > 0 y coincidencia exacta con el valor final calculado (incluyendo descuentos o ajustes por saldo pendiente/penalización).
+        4. Registra el pago manual en `payments`, el ingreso confirmado en `incomes`, marca la lavada como `paid` (y su cita como `completed`) y registra auditoría completa.
+        Operación idempotente: soporta `X-Idempotency-Key` / `Idempotency-Key` opcional y nunca crea pagos ni ingresos duplicados. Sin pasarelas de pago.
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { $ref: '#/components/parameters/IdempotencyKeyOptional' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteWashRequestInput' }
+            examples:
+              efectivo:
+                summary: Completar lavada pagando en Efectivo
+                value:
+                  paymentMethod: Efectivo
+                  amount: 7000
+              nequi:
+                summary: Completar lavada pagando con Nequi
+                value:
+                  paymentMethod: Nequi
+                  amount: 7000
+                  reference: NEQUI-20261120-1042
+              daviplata:
+                summary: Completar lavada pagando con Daviplata
+                value:
+                  paymentMethod: Daviplata
+                  amount: 7000
+                  reference: DAVI-20261120-2091
+              breB:
+                summary: Completar lavada pagando con Bre-B
+                value:
+                  paymentMethod: Bre-B
+                  amount: 7000
+                  reference: BREB-20261120-3105
+      responses:
+        '200':
+          description: Lavada completada, pago manual e ingreso financiero registrados exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/WashCompletionResult' }
+              example:
+                data:
+                  washRequest:
+                    id: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                    customerId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                    motorcycleId: 2a1b3c4d-5e6f-4789-8012-3456789abcde
+                    serviceId: 3b2c4d5e-6f70-489a-9123-456789abcdef
+                    appointmentId: null
+                    basePrice: 7000
+                    appliedPendingBalance: 0
+                    price: 7000
+                    scheduledAt: null
+                    expiresInMinutes: 15
+                    customerName: Mateo Motero
+                    motorcycleName: Yamaha FZ 25 (La Negra)
+                    serviceName: Lavada Básica
+                    status: paid
+                    rejectionReason: null
+                    confirmedAt: '2026-11-20T16:00:00.000-05:00'
+                    completedAt: '2026-11-20T16:30:00.000-05:00'
+                    audit: []
+                  payment:
+                    id: e41f8c2a-3210-4c9e-b110-12a4b5c6d7e8
+                    washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                    customerId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                    customerName: Mateo Motero
+                    method: Bre-B
+                    amount: 7000
+                    reference: BREB-20261120-3105
+                    paidAt: '2026-11-20T16:30:00.000-05:00'
+                    employeeCommission: 2100
+                    recordedBy: a1b2c3d4-0000-4000-8000-000000000001
+                    recordedByName: Administrador Los Malditos
+                    washStatus: paid
+                  income:
+                    id: f52a9d3b-4321-4d0f-a221-23b5c6d7e8f9
+                    source: wash
+                    washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                    paymentId: e41f8c2a-3210-4c9e-b110-12a4b5c6d7e8
+                    customerId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                    amount: 7000
+                    status: confirmed
+                    notes: Pago manual por Bre-B
+                    recordedBy: a1b2c3d4-0000-4000-8000-000000000001
+                    occurredAt: '2026-11-20T16:30:00.000-05:00'
+                message: Lavada completada y pago manual (Bre-B) registrado exitosamente
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /notifications:
     get:
       tags: [Notificaciones]
@@ -796,18 +904,115 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /payments:
+    get:
+      tags: [Finanzas]
+      security: [{ bearerAuth: [] }]
+      summary: Consultar pagos manuales paginados
+      description: |
+        Permite consultar pagos manuales registrados con paginación y filtros por fecha, método, usuario registrador, cliente y washRequestId.
+        Reglas de permisos:
+        - Administrador: consulta todos los pagos del negocio.
+        - Lavador: consulta únicamente los pagos registrados por él o asociados a sus lavadas asignadas.
+        - Cliente: consulta únicamente sus propios pagos.
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { in: query, name: date, description: 'Fecha puntual (YYYY-MM-DD) en America/Bogota', schema: { type: string, format: date } }
+        - { in: query, name: from, description: 'Fecha/hora inicial ISO-8601 (YYYY-MM-DD o fecha-hora con zona horaria)', schema: { type: string } }
+        - { in: query, name: to, description: 'Fecha/hora final ISO-8601 (YYYY-MM-DD o fecha-hora con zona horaria)', schema: { type: string } }
+        - { in: query, name: method, description: 'Filtrar por método manual de pago', schema: { $ref: '#/components/schemas/PaymentMethod' } }
+        - { in: query, name: recordedBy, description: 'UUID del usuario que registró el pago', schema: { type: string, format: uuid } }
+        - { in: query, name: userId, description: 'Alias de recordedBy (UUID del usuario que registró el pago)', schema: { type: string, format: uuid } }
+        - { in: query, name: customerId, description: 'UUID del cliente propietario de la lavada', schema: { type: string, format: uuid } }
+        - { in: query, name: washRequestId, description: 'UUID de la solicitud de lavada', schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Pagos consultados exitosamente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentPage' }
+              example:
+                data:
+                  - id: e41f8c2a-3210-4c9e-b110-12a4b5c6d7e8
+                    washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                    customerId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                    customerName: Mateo Motero
+                    method: Bre-B
+                    amount: 7000
+                    reference: BREB-20261120-001
+                    paidAt: '2026-11-20T16:30:00.000-05:00'
+                    employeeCommission: 2100
+                    recordedBy: a1b2c3d4-0000-4000-8000-000000000001
+                    recordedByName: Administrador Los Malditos
+                    washStatus: paid
+                meta:
+                  page: 1
+                  pageSize: 20
+                  total: 1
+                  totalPages: 1
+                message: Pagos consultados exitosamente
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Finanzas]
+      security: [{ bearerAuth: [] }]
       summary: Registrar pago manual
-      description: Solo Administrador o Lavador. No procesa tarjetas ni pasarelas.
-      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      description: |
+        Solo Administrador o Lavador. Registra un pago manual sin pasarela ni tarjetas usando Efectivo, Nequi, Daviplata o Bre-B.
+        Ejecuta la operación en una transacción con bloqueo para evitar pagos duplicados, cambia la lavada a estado `paid`, crea el ingreso financiero confirmado y registra auditoría en `audit_logs`.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKeyOptional' }]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/PaymentInput' }
+            examples:
+              breB:
+                summary: Pago manual por Bre-B
+                value:
+                  washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                  method: Bre-B
+                  amount: 7000
+                  reference: BREB-20261120-001
+              efectivo:
+                summary: Pago manual en Efectivo
+                value:
+                  washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                  method: Efectivo
+                  amount: 7000
       responses:
-        '201': { $ref: '#/components/responses/Payment' }
+        '201':
+          description: Pago manual registrado exitosamente
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties: { data: { $ref: '#/components/schemas/Payment' } }
+              example:
+                data:
+                  id: e41f8c2a-3210-4c9e-b110-12a4b5c6d7e8
+                  washRequestId: 6f29a8d2-90c8-4c5c-96f9-4b1de594d901
+                  customerId: 8e4f93e6-4928-4d6f-9871-5a40e34b6d11
+                  customerName: Mateo Motero
+                  method: Bre-B
+                  amount: 7000
+                  reference: BREB-20261120-001
+                  paidAt: '2026-11-20T16:30:00.000-05:00'
+                  employeeCommission: 2100
+                  recordedBy: a1b2c3d4-0000-4000-8000-000000000001
+                  recordedByName: Administrador Los Malditos
+                  washStatus: paid
+                message: Pago manual (Bre-B) registrado exitosamente
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
   /expenses:
     get:
       tags: [Finanzas]
@@ -1499,6 +1704,12 @@ components:
       name: X-Idempotency-Key
       required: true
       schema: { type: string, minLength: 16, maxLength: 100 }
+    IdempotencyKeyOptional:
+      in: header
+      name: X-Idempotency-Key
+      required: false
+      description: Clave opcional de idempotencia (también se acepta Idempotency-Key) para reintentos seguros
+      schema: { type: string, minLength: 16, maxLength: 100 }
   responses:
     Empty:
       description: Operación exitosa
@@ -1628,6 +1839,9 @@ components:
     LoyaltyCustomerPage:
       description: Página de clientes en fidelización
       content: { application/json: { schema: { $ref: '#/components/schemas/LoyaltyCustomerPage' } } }
+    PaymentPage:
+      description: Página de pagos manuales
+      content: { application/json: { schema: { $ref: '#/components/schemas/PaymentPage' } } }
     ExpensePage:
       description: Página de gastos
       content: { application/json: { schema: { $ref: '#/components/schemas/ExpensePage' } } }
@@ -1652,6 +1866,9 @@ components:
     AuditPage:
       description: Página de auditoría
       content: { application/json: { schema: { $ref: '#/components/schemas/AuditPage' } } }
+    BadRequest:
+      description: Solicitud malformada o JSON inválido
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
     Unauthorized:
       description: No autorizado
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEnvelope' } } }
@@ -1885,6 +2102,8 @@ components:
           required: [id, status, customerName, motorcycleName, serviceName, audit]
           properties:
             id: { type: string, format: uuid }
+            basePrice: { type: integer, minimum: 0 }
+            appliedPendingBalance: { type: integer, minimum: 0 }
             customerName: { type: string }
             motorcycleName: { type: string }
             serviceName: { type: string }
@@ -1896,22 +2115,48 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/AuditEvent'
+    CompleteWashRequestInput:
+      type: object
+      additionalProperties: false
+      required: [paymentMethod, amount]
+      properties:
+        paymentMethod: { $ref: '#/components/schemas/PaymentMethod' }
+        amount: { type: integer, minimum: 1, description: 'Monto final en COP (entero mayor que cero, debe coincidir con el valor calculado de la lavada)' }
+        reference: { type: string, maxLength: 120, nullable: true, description: 'Referencia o comprobante opcional del pago manual' }
+    WashCompletionResult:
+      type: object
+      required: [washRequest, payment, income]
+      properties:
+        washRequest: { $ref: '#/components/schemas/WashRequest' }
+        payment: { $ref: '#/components/schemas/Payment' }
+        income: { $ref: '#/components/schemas/Income' }
+    PaymentMethod:
+      type: string
+      enum: [Efectivo, Nequi, Daviplata, Bre-B]
+      description: Métodos manuales aceptados en Los Malditos (sin pasarelas de pago)
     PaymentInput:
       type: object
+      additionalProperties: false
       required: [washRequestId, method, amount]
       properties:
         washRequestId: { type: string, format: uuid }
-        method: { type: string, enum: [Efectivo, Nequi, Daviplata] }
-        amount: { type: integer, minimum: 0 }
-        reference: { type: string, nullable: true }
+        method: { $ref: '#/components/schemas/PaymentMethod' }
+        amount: { type: integer, minimum: 1, description: 'Monto en pesos colombianos (COP), entero mayor que cero' }
+        reference: { type: string, maxLength: 120, nullable: true, description: 'Referencia o comprobante opcional del pago manual' }
     Payment:
       allOf:
         - $ref: '#/components/schemas/PaymentInput'
         - type: object
+          required: [id, customerId, customerName, paidAt, employeeCommission, washStatus]
           properties:
             id: { type: string, format: uuid }
+            customerId: { type: string, format: uuid }
+            customerName: { type: string }
             paidAt: { type: string, format: date-time }
             employeeCommission: { type: integer, minimum: 0 }
+            recordedBy: { type: string, format: uuid, nullable: true }
+            recordedByName: { type: string, nullable: true }
+            washStatus: { type: string, example: paid }
     PromotionInput:
       type: object
       additionalProperties: false
@@ -1998,8 +2243,12 @@ components:
         id: { type: string, format: uuid }
         source: { type: string, enum: [wash, cancellation_fee, other] }
         washRequestId: { type: string, format: uuid, nullable: true }
+        paymentId: { type: string, format: uuid, nullable: true }
         customerId: { type: string, format: uuid, nullable: true }
         amount: { type: integer, minimum: 0 }
+        status: { type: string, enum: [pending, confirmed, settled] }
+        notes: { type: string, nullable: true }
+        recordedBy: { type: string, format: uuid, nullable: true }
         occurredAt: { type: string, format: date-time }
     InventoryInput:
       type: object
@@ -2274,6 +2523,8 @@ components:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/LoyaltyCard' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     LoyaltyCustomerPage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/LoyaltyCustomerSummary' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
+    PaymentPage:
+      allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Payment' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     ExpensePage:
       allOf: [{ $ref: '#/components/schemas/Envelope' }, { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Expense' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }]
     IncomePage:

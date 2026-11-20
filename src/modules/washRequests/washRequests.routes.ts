@@ -25,6 +25,10 @@ import {
   toIsoBogota,
   toIsoBogotaNullable,
 } from '../../utils/time.js';
+import {
+  paymentMethodSchema,
+  recordManualPaymentTx,
+} from '../finance/payments.service.js';
 
 const WASH_STATUSES = [
   'pending_confirmation',
@@ -68,6 +72,24 @@ const updateWashStatusSchema = z
     employeeId: uuidSchema.nullable().optional(),
     beforePhotoUrl: z.string().url().nullable().optional(),
     afterPhotoUrl: z.string().url().nullable().optional(),
+  })
+  .strict();
+
+const completeWashRequestSchema = z
+  .object({
+    paymentMethod: paymentMethodSchema,
+    amount: z
+      .number({
+        message: 'El monto en COP debe ser un número entero mayor que cero',
+      })
+      .int('El monto en COP debe ser un número entero')
+      .min(1, 'El monto en COP debe ser mayor que cero'),
+    reference: z
+      .string({ message: 'La referencia debe ser una cadena de texto' })
+      .trim()
+      .max(120, 'La referencia no puede superar 120 caracteres')
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -125,6 +147,8 @@ async function hydrateWashRequest(db: DbExecutor, row: WashRequestRow) {
     motorcycleId: row.motorcycle_id,
     serviceId: row.service_id,
     appointmentId: row.appointment_id,
+    basePrice: Number(row.base_price),
+    appliedPendingBalance: Number(row.applied_pending_balance),
     price: Number(row.price),
     scheduledAt: toIsoBogotaNullable(row.scheduled_at),
     expiresInMinutes: Number(row.expires_in_minutes),
@@ -970,6 +994,62 @@ export function createWashRequestsRouter(db: DbClient): Router {
           data: updated,
           message: `Estado operativo actualizado a '${body.status}'`,
         });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  router.post(
+    '/:id/complete',
+    authenticate(),
+    requireRoles('Administrador', 'Lavador'),
+    validateParams(idParamSchema),
+    validateIdempotencyHeader(false),
+    validateBody(completeWashRequestSchema),
+    async (req, res, next) => {
+      try {
+        const actor = req.user!;
+        const { id } = res.locals.params as { id: string };
+        const body = req.body as z.infer<typeof completeWashRequestSchema>;
+        const idempotencyKey = res.locals.idempotencyKey as string | undefined;
+
+        const out = await runIdempotent(
+          db,
+          {
+            key: idempotencyKey,
+            actorId: actor.id,
+            method: 'POST',
+            path: `/wash-requests/${id}/complete`,
+            requestBody: body,
+            successStatus: 200,
+          },
+          async (tx) => {
+            const paymentResult = await recordManualPaymentTx(tx, {
+              actor,
+              washRequestId: id,
+              method: body.paymentMethod,
+              amount: body.amount,
+              reference: body.reference,
+              ipAddress: req.clientIp,
+              mode: 'complete',
+            });
+
+            const hydratedRow = await fetchWashRequestRow(tx, id);
+            const washRequest = await hydrateWashRequest(tx, hydratedRow!);
+
+            return {
+              data: {
+                washRequest,
+                payment: paymentResult.data,
+                income: paymentResult.income,
+              },
+              message: paymentResult.message,
+            };
+          },
+        );
+
+        return res.status(out.statusCode).json(out.body);
       } catch (err) {
         next(err);
       }
